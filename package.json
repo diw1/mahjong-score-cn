@@ -1,0 +1,10 @@
+{
+  "name": "mahjong-score-cn",
+  "version": "1.0.2",
+  "private": true,
+  "description": "本地保存数据的中文麻将局后记分网站",
+  "scripts": {
+    "test": "node --test engine.test.js",
+    "check": "node --check app.js && node --check engine.js && node --check sw.js && node --check web-app.js"
+  }
+}

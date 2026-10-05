@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+backups/
+exports/
+output/playwright/
+*.log
+*.apk
+.signing/
+.tools/
+Thumbs.db
+.DS_Store

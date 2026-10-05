@@ -1,0 +1,20 @@
+{
+  "id": "./",
+  "name": "麻将记分",
+  "short_name": "麻将记分",
+  "description": "中文日本麻将局后记分与整场祝仪结算，记录保存在本机。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#00603b",
+  "background_color": "#f7faf8",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
