@@ -4,7 +4,7 @@
   "private": true,
   "description": "本地保存数据的中文麻将局后记分网站",
   "scripts": {
-    "test": "node --test engine.test.js paipu-client.test.js paipu-settlement.test.js",
+    "test": "node --test engine.test.js paipu-client.test.js paipu-settlement.test.js paipu-cloud.test.js",
     "check": "node --check app.js && node --check engine.js && node --check sw.js && node --check web-app.js && node --check paipu.js && node --check paipu-client.js && node --check paipu-settlement.js && node --check paipu-cloud.js"
   }
 }

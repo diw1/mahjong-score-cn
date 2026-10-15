@@ -3,6 +3,7 @@
   const STORAGE_KEY = 'mahjong-paipu-cn-v1';
   const BACKUP_TYPE = 'paipu-settlement-backup';
   const DEFAULT_RULES = { chipPT: 3, pointRate: 10, returnPoints: 25000, uma: [15, 5, -5, -15], yakumanRonChips: 10, yakumanTsumoChips: 5, doubleYakuman: 'count' };
+  const PUBLIC_READ_ENABLED = window.PaipuCloud?.publicReadEnabled === true;
   const $ = (id) => document.getElementById(id);
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const escapeHTML = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -236,10 +237,10 @@
     let added = 0, skipped = 0, failed = 0, cancelled = false, connectionError = '';
     const seenInputs = new Set();
     try {
-      if (!window.PaipuCloud || typeof window.PaipuCloud.connect !== 'function') throw new Error('私有后台连接模块未加载，请刷新页面，或打开云端牌谱页面继续。');
-      // connect opens its fixed-origin popup synchronously, before this handler awaits.
+      if (!window.PaipuCloud || typeof window.PaipuCloud.connect !== 'function') throw new Error(PUBLIC_READ_ENABLED ? '公共牌谱连接模块未加载，请刷新页面后重试。' : '私有后台连接模块未加载，请刷新页面，或打开云端牌谱页面继续。');
+      // In private mode connect opens its fixed-origin popup before this handler awaits.
       const connection = window.PaipuCloud.connect({ signal: controller.signal });
-      status('请在私有后台窗口中完成登录与授权。若无法连接，可打开云端牌谱页面继续。');
+      status(PUBLIC_READ_ENABLED ? '正在连接公共牌谱服务，无需登录个人雀魂账号。' : '请在私有后台窗口中完成登录与授权。若无法连接，可打开云端牌谱页面继续。');
       const loader = await connection;
       for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
@@ -263,7 +264,7 @@
     } catch (e) {
       if (controller.signal.aborted || e.name === 'AbortError') cancelled = true;
       else {
-        connectionError = e.message || '私有后台连接失败，请打开云端牌谱页面继续。';
+        connectionError = e.message || (PUBLIC_READ_ENABLED ? '公共牌谱服务连接失败，请稍后重试。' : '私有后台连接失败，请打开云端牌谱页面继续。');
         jobs.forEach((job) => { if (job.state === 'pending' || job.state === 'loading') { job.state = 'failed'; job.message = connectionError; failed++; } });
       }
     } finally {
@@ -356,6 +357,9 @@
   window.addEventListener('offline', networkState);
   window.addEventListener('online', networkState);
   try { modules(); } catch (e) { $('module-error').textContent = e.message; $('module-error').hidden = false; $('parse-button').disabled = true; }
-  if (window.PaipuCloud && typeof location !== 'undefined' && location.origin === window.PaipuCloud.backendOrigin) $('cloud-continue').hidden = true;
+  if (PUBLIC_READ_ENABLED) {
+    document.querySelector('.local-note').textContent = '解析结果仅保存在当前浏览器，可导出备份。读取新牌谱通过公共云端专用账号完成，无需登录个人雀魂账号；已保存的结果可离线重算。';
+    document.querySelector('.cloud-note').textContent = '读取时仅提交牌谱链接。若公共服务尚未就绪或繁忙，会逐条显示错误，未成功的牌谱不会计入结算。';
+  } else if (window.PaipuCloud && typeof location !== 'undefined' && location.origin === window.PaipuCloud.backendOrigin) $('cloud-continue').hidden = true;
   load(); fillRules(); renderResults(); networkState();
 })();

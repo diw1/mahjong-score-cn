@@ -1,6 +1,8 @@
 (function () {
   'use strict';
   const BACKEND_ORIGIN = 'https://mahjong-paipu-kevin-9d6b.diwang39.chatgpt.site';
+  // Enable only after the owner authorizes a separate service account and enables the backend.
+  const PUBLIC_READ_ENABLED = false;
   const APP_ORIGINS = new Set(['https://diw1.github.io', 'http://127.0.0.1:8873']);
   const VERSION = 1;
   const PREFIX = 'mahjong-paipu:';
@@ -9,10 +11,10 @@
   let activeConnection = null;
 
   function cloudError(code, message) { const error = new Error(message); error.name = 'PaipuCloudError'; error.code = code; return error; }
-  function abortError() { const error = new Error('已取消私有后台读取。'); error.name = 'AbortError'; error.code = 'ABORTED'; return error; }
+  function abortError(message = '已取消私有后台读取。') { const error = new Error(message); error.name = 'AbortError'; error.code = 'ABORTED'; return error; }
   function token(bytes = 24) { const values = new Uint8Array(bytes); crypto.getRandomValues(values); return Array.from(values, (value) => value.toString(16).padStart(2, '0')).join(''); }
   function recordURL(meta) { if (!meta || typeof meta.url !== 'string' || meta.url.length > 8192) throw cloudError('INVALID_URL', '缺少有效牌谱链接。'); return meta.url; }
-  function rawRecord(body) { if (!body || !body.head || typeof body.head !== 'object' || Array.isArray(body.head) || typeof body.data !== 'string' || !body.data) throw cloudError('INVALID_RESPONSE', '私有后台没有返回完整的原始牌谱。'); return { head: body.head, data: body.data }; }
+  function rawRecord(body, source = '私有后台') { if (!body || !body.head || typeof body.head !== 'object' || Array.isArray(body.head) || typeof body.data !== 'string' || !body.data) throw cloudError('INVALID_RESPONSE', source + '没有返回完整的原始牌谱。'); return { head: body.head, data: body.data }; }
   function responseError(body, status) {
     const code = typeof body?.error?.code === 'string' ? body.error.code : typeof body?.error === 'string' ? body.error : typeof body?.code === 'string' ? body.code : 'HTTP_' + status;
     const messages = {
@@ -54,8 +56,67 @@
       finally { clearTimeout(timeout); taskSignal?.removeEventListener('abort', cancel); }
     };
   }
+  function publicResponseError(body, status) {
+    const rawCode = typeof body?.error?.code === 'string' ? body.error.code : typeof body?.error === 'string' ? body.error : typeof body?.code === 'string' ? body.code : '';
+    const code = /^[A-Z0-9_]{1,64}$/.test(rawCode) ? rawCode : status === 404 ? 'PUBLIC_DISABLED' : 'PUBLIC_READ_FAILED';
+    const messages = {
+      PUBLIC_DISABLED: '公共牌谱读取尚未启用，请稍后再试。',
+      SERVICE_NOT_CONNECTED: '公共牌谱服务尚未连接专用账号，请等待站点管理员完成配置。',
+      NOT_CONNECTED: '公共牌谱服务尚未连接专用账号，请等待站点管理员完成配置。',
+      ERR_NOT_LOGIN: '公共牌谱服务的专用账号已离线，请等待站点管理员重新连接。',
+      SESSION_EXPIRED: '公共牌谱服务的专用账号已离线，请等待站点管理员重新连接。',
+      BUSY: '公共牌谱服务正在读取其他牌谱，请稍后重试。',
+      RATE_LIMITED: '读取请求过于频繁，请稍后重试。',
+      TIMEOUT: '公共牌谱读取超时，请稍后重试。',
+      INVALID_URL: '公共牌谱服务不支持这个牌谱链接。',
+      NOT_FOUND: '未找到牌谱，或专用账号没有读取权限。',
+      FORBIDDEN: '当前页面无法使用公共牌谱服务，请从正式网站打开。',
+    };
+    return cloudError(code, messages[code] || '公共牌谱读取失败，请稍后重试。');
+  }
+  async function publicRequest(path, body, signal) {
+    let response;
+    try {
+      response = await fetch(BACKEND_ORIGIN + path, { method: body == null ? 'GET' : 'POST', mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', headers: body == null ? {} : { 'Content-Type': 'application/json' }, ...(body == null ? {} : { body: JSON.stringify(body) }), signal });
+    } catch (error) {
+      if (error.name === 'AbortError') throw error;
+      throw cloudError('NETWORK_ERROR', '无法连接公共牌谱服务，请检查网络后重试。');
+    }
+    let data;
+    try { data = await response.json(); } catch (_) { throw cloudError('INVALID_RESPONSE', '公共牌谱服务响应不可读取，请稍后重试。'); }
+    if (!response.ok) throw publicResponseError(data, response.status);
+    return data;
+  }
+  async function connectPublic({ signal } = {}) {
+    if (signal?.aborted) throw abortError('已取消公共牌谱读取。');
+    if (location.origin !== BACKEND_ORIGIN && !APP_ORIGINS.has(location.origin)) throw cloudError('UNTRUSTED_ORIGIN', '请从正式牌谱结算网站使用公共读取。');
+    const request = new AbortController();
+    const cancel = () => request.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    let timedOut = false, state;
+    const timer = setTimeout(() => { timedOut = true; request.abort(); }, 25000);
+    try { state = await publicRequest('/api/public/status', null, request.signal); }
+    catch (error) { if (timedOut) throw cloudError('CONNECT_TIMEOUT', '公共牌谱服务连接检查超时，请稍后重试。'); if (signal?.aborted) throw abortError('已取消公共牌谱读取。'); throw error; }
+    finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
+    if (state?.enabled !== true) throw publicResponseError({ error: 'PUBLIC_DISABLED' }, 404);
+    if (state.connected !== true) throw publicResponseError({ error: 'SERVICE_NOT_CONNECTED' }, 503);
+    return async function loader(meta, { signal: taskSignal, onProgress } = {}) {
+      if (taskSignal?.aborted) throw abortError('已取消公共牌谱读取。');
+      const url = recordURL(meta), taskRequest = new AbortController();
+      let taskTimedOut = false;
+      const cancelTask = () => taskRequest.abort();
+      taskSignal?.addEventListener('abort', cancelTask, { once: true });
+      const timeout = setTimeout(() => { taskTimedOut = true; taskRequest.abort(); }, RECORD_TIMEOUT);
+      try {
+        if (typeof onProgress === 'function') onProgress('正在通过公共牌谱服务读取…');
+        return rawRecord(await publicRequest('/api/public/record', { url }, taskRequest.signal), '公共牌谱服务');
+      } catch (error) { if (taskTimedOut) throw cloudError('TIMEOUT', '公共牌谱读取超时，请稍后重试。'); if (taskSignal?.aborted) throw abortError('已取消公共牌谱读取。'); throw error; }
+      finally { clearTimeout(timeout); taskSignal?.removeEventListener('abort', cancelTask); }
+    };
+  }
   function connect({ signal } = {}) {
-    if (signal?.aborted) return Promise.reject(abortError());
+    if (signal?.aborted) return Promise.reject(abortError(PUBLIC_READ_ENABLED ? '已取消公共牌谱读取。' : '已取消私有后台读取。'));
+    if (PUBLIC_READ_ENABLED) return connectPublic({ signal });
     if (location.origin === BACKEND_ORIGIN) return connectSameOrigin({ signal });
     if (!APP_ORIGINS.has(location.origin)) return Promise.reject(cloudError('UNTRUSTED_ORIGIN', '请从正式牌谱结算网站打开私有后台连接。'));
     if (activeConnection) activeConnection.dispose(cloudError('RECONNECTED', '已建立新的私有后台连接。'), true);
@@ -122,5 +183,5 @@
       try { post('bootstrap'); } catch (_) { /* The next bootstrap follows after the private page finishes loading. */ }
     });
   }
-  window.PaipuCloud = Object.freeze({ backendOrigin: BACKEND_ORIGIN, connect });
+  window.PaipuCloud = Object.freeze({ backendOrigin: BACKEND_ORIGIN, publicReadEnabled: PUBLIC_READ_ENABLED, connect, connectPublic });
 })();
