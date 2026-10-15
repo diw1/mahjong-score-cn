@@ -8,11 +8,11 @@
   <meta name="description" content="读取雀魂牌谱，核对一发、红宝与里宝祝仪，以及各家结算。解析结果保存在当前浏览器。">
   <title>牌谱结算 · 麻将成绩</title>
   <link rel="icon" type="image/svg+xml" href="icon.svg">
-  <link rel="stylesheet" href="paipu.css">
+  <link rel="stylesheet" href="paipu.css?v=3">
   <script src="paipu-cloud.js" defer></script>
   <script src="paipu-client.js" defer></script>
   <script src="paipu-settlement.js" defer></script>
-  <script src="paipu.js" defer></script>
+  <script src="paipu.js?v=3" defer></script>
   <script src="web-app.js" defer></script>
 </head>
 <body>
@@ -42,32 +42,14 @@
           <div class="rule-fields">
             <label for="chip-pt">每祝价值（PT）<input id="chip-pt" name="chipPT" type="number" min="0" max="1000" step="0.1" value="3" required></label>
             <label for="point-rate">折算倍率<input id="point-rate" name="pointRate" type="number" min="0" max="100000" step="0.01" value="10" required></label>
-            <label for="return-points">返还点数<input id="return-points" name="returnPoints" type="number" min="100" max="1000000" step="100" value="25000" required></label>
-          </div>
-          <div class="yakuman-settings">
-            <div class="yakuman-prices">
-              <label for="yakuman-ron">役满荣和 · 每份祝数<input id="yakuman-ron" name="yakumanRonChips" type="number" min="0" max="1000" step="1" value="10" required></label>
-              <label for="yakuman-tsumo">役满自摸 · 每家每份<input id="yakuman-tsumo" name="yakumanTsumoChips" type="number" min="0" max="1000" step="1" value="5" required></label>
-            </div>
-            <label class="yakuman-mode" for="yakuman-count">役满份数<select id="yakuman-count" name="doubleYakuman"><option value="count" selected>按牌谱倍数叠加 · 双倍计 2 份</option><option value="single">每次役满和牌只计 1 份</option></select></label>
-          </div>
-          <div class="preset-row" role="group" aria-label="顺位马预设">
-            <button id="preset-plain" class="preset" type="button" aria-pressed="false">纯素点对照 · 马 0</button>
-            <button id="preset-site" class="preset active" type="button" aria-pressed="true">本站四麻规则 · 15 / 5</button>
           </div>
           <details class="rule-details">
-            <summary>顺位马与祝仪规则</summary>
-            <div class="uma-fields" aria-label="顺位马">
-              <label>第 1 位<input name="uma0" type="number" min="-1000" max="1000" step="0.1" value="15" required></label>
-              <label>第 2 位<input name="uma1" type="number" min="-1000" max="1000" step="0.1" value="5" required></label>
-              <label>第 3 位<input name="uma2" type="number" min="-1000" max="1000" step="0.1" value="-5" required></label>
-              <label>第 4 位<input name="uma3" type="number" min="-1000" max="1000" step="0.1" value="-15" required></label>
-            </div>
+            <summary>固定结算规则</summary>
+            <p>返还点数固定 25,000；四麻顺位马 +15 / +5 / −5 / −15，三麻顺位马为 0，按牌谱人数自动处理。</p>
             <p>一发、红宝、里宝各计 1 祝；多个红宝或里宝按数量计算。自摸由其余各家支付，荣和由放铳者支付。</p>
-            <p>役满额外按份数计祝：默认荣和每份 10 祝，自摸由其余每家每份支付 5 祝；双倍或复合役满按牌谱倍数叠加，可修改上方设置。</p>
-            <p>旧解析结果若没有役满元信息，启用役满祝仪需重新读取完整牌谱，缺失信息不会当作 0。</p>
+            <p>役满荣和每份 10 祝，自摸由其余每家每份支付 5 祝；双倍或复合役满按牌谱倍数叠加。</p>
+            <p>旧解析结果若没有役满元信息，会保留牌谱并提示暂不能结算。请先导出 JSON 备份，再清空牌谱结果并重新读取完整牌谱；缺失信息不会当作 0。</p>
             <p>素点 PT =（最终点数 − 返还点数）÷ 1,000。总 PT = 素点 PT + 顺位马 + 净祝数 × 每祝 PT；折算数 = 总 PT × 折算倍率。</p>
-            <p>默认返点 25,000、四麻顺位马 +15 / +5 / −5 / −15、每祝 3 PT、倍率 10。需要原工具 103 纯素点对照时选择“纯素点对照 · 马 0”。三麻请选择全 0 顺位马；“本站四麻规则”只用于四麻。</p>
           </details>
           <p id="rule-error" class="form-error" role="alert" hidden></p>
           <div class="submit-row"><button class="primary-button" id="parse-button" type="submit">读取并计算牌谱</button></div>
