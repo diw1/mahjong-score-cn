@@ -92,6 +92,8 @@
   function head(m) {
     const account = data => ({ account_id: uint(data, 1), seat: uint(data, 2), nickname: string(data, 3) });
     const result = raw(m, 12) ? message(raw(m, 12)) : new Map();
+    // GameEndResult.PlayerItem.total_point is int32 field 2. In proto3 an
+    // omitted scalar is the official zero value; JSON missing metadata stays unknown.
     return { uuid: string(m, 1), accounts: [...nested(m, 11, account), ...nested(m, 13, account)], result: { players: nested(result, 1, item => ({ seat: uint(item, 1), part_point_1: int(item, 3), total_point: int(item, 2) })) } };
   }
   function response(input) {
@@ -220,7 +222,17 @@
     if (!firstScores || roundOpen || !terminals) fail('TRUNCATED_RECORD', '原始牌谱没有完整的开局与终局事件，不能生成祝仪结果。');
     const resultPlayers = h.result?.players;
     if (!resultPlayers?.length && !metadata.result) fail('RECORD_METADATA_REQUIRED', '牌谱缺少权威终局结果，需要同时导入 head.result 或明确的终局点数。');
-    const result = resultPlayers?.length ? resultPlayers.map(p => ({ seat: Number(p.seat || 0), points: Number(field(p, 'part_point_1', 'partPoint1') || 0) })) : metadata.result;
+    const result = resultPlayers?.length ? resultPlayers.map(p => {
+      const item = { seat: Number(p.seat || 0), points: Number(field(p, 'part_point_1', 'partPoint1') || 0) };
+      const official = field(p, 'total_point', 'totalPoint');
+      if (official !== undefined) {
+        check(Number.isSafeInteger(official) && official >= -2147483648 && official <= 2147483647, '官方终局 PT 数值无效。');
+        // The official result UI displays total_point / 1000, including its
+        // own placement adjustments. Do not reconstruct it from raw points.
+        item.officialPT = official / 1000;
+      }
+      return item;
+    }) : metadata.result;
     if (terminalScores && result.some(p => terminalScores[p.seat] !== p.points)) fail('INVALID_RECORD', '原始牌谱最后点数与权威终局结果不一致。');
     const startPoints = metadata.startPoints !== undefined ? metadata.startPoints : firstScores && firstScores.every(n => n === firstScores[0]) ? firstScores[0] : 25000;
     return validateRecord({ id: h.uuid || metadata.id || '', url: metadata.url || '', players, rounds, result, startPoints });
@@ -240,7 +252,14 @@
     const resultSeats = new Set();
     const result = input.result.map(p => {
       check(p && seats.has(p.seat) && !resultSeats.has(p.seat) && Number.isSafeInteger(p.points) && Math.abs(p.points) <= 10000000, '终局点数或座位无效。');
-      resultSeats.add(p.seat); return { seat: p.seat, points: p.points };
+      const clean = { seat: p.seat, points: p.points };
+      if (p.officialPT !== undefined) {
+        check(typeof p.officialPT === 'number' && Number.isFinite(p.officialPT), '官方终局 PT 数值无效。');
+        const units = Math.round(p.officialPT * 1000);
+        check(Number.isSafeInteger(units) && units >= -2147483648 && units <= 2147483647 && p.officialPT === units / 1000, '官方终局 PT 数值无效。');
+        clean.officialPT = p.officialPT;
+      }
+      resultSeats.add(p.seat); return clean;
     }).sort((a, b) => a.seat - b.seat);
     check(result.reduce((n, p) => n + p.points, 0) === input.startPoints * count, '终局点数总和与起始点数不符。');
     check(Array.isArray(input.rounds) && input.rounds.length <= 10000, '和牌事件列表无效。');

@@ -2,14 +2,15 @@
   'use strict';
   const STORAGE_KEY = 'mahjong-paipu-cn-v1';
   const BACKUP_TYPE = 'paipu-settlement-backup';
-  const DEFAULT_RULES = { chipPT: 3, pointRate: 10, returnPoints: 25000, uma: [15, 5, -5, -15], yakumanRonChips: 10, yakumanTsumoChips: 5, doubleYakuman: 'count' };
+  const DEFAULT_RULES = { scoreMode: 'official', chipPT: 3, pointRate: 10, yakumanRonChips: 10, yakumanTsumoChips: 5, doubleYakuman: 'count' };
   const PUBLIC_READ_ENABLED = window.PaipuCloud?.publicReadEnabled === true;
   const $ = (id) => document.getElementById(id);
   const clone = (value) => JSON.parse(JSON.stringify(value));
+  const recordKey = (value) => String(value).toLowerCase();
   const escapeHTML = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const format = (value, decimals = 2) => Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: decimals });
-  const signed = (value) => (value > 0 ? '+' : '') + format(value);
-  const numberHTML = (value) => '<span class="' + (value > 0 ? 'positive' : value < 0 ? 'negative' : 'neutral') + '">' + escapeHTML(signed(value || 0)) + '</span>';
+  const signed = (value, decimals = 3) => (value > 0 ? '+' : '') + format(value, decimals);
+  const numberHTML = (value, decimals = 3) => '<span class="' + (value > 0 ? 'positive' : value < 0 ? 'negative' : 'neutral') + '">' + escapeHTML(signed(value || 0, decimals)) + '</span>';
   const emptyStore = () => ({ type: BACKUP_TYPE, schemaVersion: 1, rules: clone(DEFAULT_RULES), records: [] });
   let store = emptyStore();
   let readFailed = false;
@@ -36,86 +37,30 @@
       pointRate: numeric(raw.pointRate, '折算倍率', 0, 100000, 0.01),
     };
   }
-  function rulesForCount(rules, count) {
-    if (![3, 4].includes(count)) throw new Error('仅支持三人或四人牌谱。');
-    return { ...validateRules(rules), uma: count === 3 ? [0, 0, 0] : [15, 5, -5, -15] };
-  }
   function calculateRecord(record, rules, allowMissingMetadata = false) {
-    const activeRules = rulesForCount(rules, record?.players?.length);
+    const activeRules = validateRules(rules);
     try { return modules().settlement.calculate(record, activeRules); }
     catch (error) {
-      if (!allowMissingMetadata || error.code !== 'YAKUMAN_METADATA_REQUIRED') throw error;
-      // Validate known data only. This result is discarded; missing metadata is never filled or priced as zero.
-      modules().settlement.calculate(record, { ...activeRules, yakumanRonChips: 0, yakumanTsumoChips: 0 });
+      if (!allowMissingMetadata || !['YAKUMAN_METADATA_REQUIRED', 'MISSING_OFFICIAL_PT'].includes(error.code)) throw error;
+      // Validate the known event data without making up official scores or yakuman metadata.
+      // This legacy-mode validation result is discarded, never displayed or stored.
+      modules().settlement.calculate(record, { ...activeRules, scoreMode: 'custom', returnPoints: record.startPoints, uma: Array(record.players.length).fill(0), yakumanRonChips: 0, yakumanTsumoChips: 0 });
       return null;
     }
   }
   function aggregatePageRecords(records, rules, allowMissingMetadata = false) {
-    const settlement = modules().settlement;
-    if (!records.length) return settlement.aggregateRecords([], rulesForCount(rules, 4));
-    const groups = new Map(), seen = new Set();
-    records.forEach((record) => {
-      if (seen.has(record.id)) throw new Error('重复牌谱：' + record.id + '。');
-      seen.add(record.id);
-      const count = record?.players?.length;
-      rulesForCount(rules, count);
-      if (!groups.has(count)) groups.set(count, []);
-      groups.get(count).push(record);
-    });
-    const parts = [];
+    const activeRules = validateRules(rules), seen = new Set();
     let incomplete = false;
-    groups.forEach((group, count) => {
-      try { parts.push(settlement.aggregateRecords(group, rulesForCount(rules, count))); }
-      catch (error) {
-        if (!allowMissingMetadata || error.code !== 'YAKUMAN_METADATA_REQUIRED') throw error;
-        group.forEach((record) => calculateRecord(record, rules, true));
-        incomplete = true;
-      }
+    records.forEach((record) => {
+      if (seen.has(recordKey(record.id))) throw new Error('重复牌谱：' + record.id + '。');
+      seen.add(recordKey(record.id));
+      if (allowMissingMetadata && !calculateRecord(record, activeRules, true)) incomplete = true;
     });
     if (incomplete) return null;
-    if (parts.length === 1) return parts[0];
-    const fields = ['basePT', 'umaPT', 'chips', 'chipPT', 'totalPT'];
-    const clean = (value) => Math.abs(value) < 1e-8 ? 0 : Number(value.toFixed(8));
-    const byId = new Map(), cents = new Map(), ranks = new Map();
-    parts.forEach((part) => part.entries.forEach((entry) => {
-      if (!byId.has(entry.playerId)) {
-        byId.set(entry.playerId, { playerId: entry.playerId, name: entry.name, names: [], games: 0, basePT: 0, umaPT: 0, chips: 0, chipPT: 0, totalPT: 0, money: 0, averageRank: 0, firsts: 0, lasts: 0 });
-        cents.set(entry.playerId, 0); ranks.set(entry.playerId, 0);
-      }
-      const row = byId.get(entry.playerId);
-      fields.forEach((field) => row[field] += entry[field]);
-      ['games', 'firsts', 'lasts'].forEach((field) => row[field] += entry[field]);
-      // Each group has already settled to cents. Add those cents, without repricing PT.
-      cents.set(entry.playerId, cents.get(entry.playerId) + Math.round(entry.money * 100));
-    }));
-    const byRecord = new Map(parts.flatMap((part) => part.records).map((result) => [result.id, result]));
-    const calculated = records.map((record) => byRecord.get(record.id));
-    const order = [];
-    calculated.forEach((result) => result.entries.forEach((entry) => {
-      const row = byId.get(entry.playerId);
-      if (!order.includes(entry.playerId)) order.push(entry.playerId);
-      row.name = entry.name;
-      if (!row.names.includes(entry.name)) row.names.push(entry.name);
-      const tied = result.rules.tieMode === 'split' ? result.entries.filter((other) => other.rank === entry.rank).length : 1;
-      ranks.set(entry.playerId, ranks.get(entry.playerId) + entry.rank + (tied - 1) / 2);
-    }));
-    const entries = order.map((id) => {
-      const row = byId.get(id);
-      fields.forEach((field) => row[field] = clean(row[field]));
-      row.money = cents.get(id) / 100;
-      row.averageRank = clean(ranks.get(id) / row.games);
-      return row;
-    });
-    const totals = Object.fromEntries(fields.map((field) => [field, clean(entries.reduce((sum, row) => sum + row[field], 0))]));
-    totals.money = [...cents.values()].reduce((sum, value) => sum + value, 0) / 100;
-    const warnings = calculated.flatMap((result) => result.warnings.map((warning) => '牌谱 ' + result.id + '：' + warning));
-    const names = new Map();
-    entries.forEach((entry) => {
-      const existing = names.get(entry.name);
-      if (existing && existing !== entry.playerId) warnings.push('昵称“' + entry.name + '”对应不同玩家 ID，已分别统计。');
-      else names.set(entry.name, entry.playerId);
-    });
-    return { records: calculated, entries, totals, warnings };
+    return modules().settlement.aggregateRecords(records, activeRules);
+  }
+  function needsMetadata(record) {
+    return record.result.some((entry) => entry.officialPT === undefined) || record.rounds.some((round) => round.yakumanUnits === undefined);
   }
   function validatedRecord(raw) {
     const checked = modules().client.validateRecord(clone(raw));
@@ -127,7 +72,7 @@
     if (!raw || raw.type !== BACKUP_TYPE || raw.schemaVersion !== 1 || !Array.isArray(raw.records) || raw.records.length > 1000) throw new Error('请选择有效的牌谱解析 JSON 备份');
     const rules = validateRules(raw.rules);
     const seen = new Set();
-    const records = raw.records.map((item) => { const record = validatedRecord(item); if (seen.has(record.id)) throw new Error('备份含重复牌谱，未导入'); seen.add(record.id); return record; });
+    const records = raw.records.map((item) => { const record = validatedRecord(item); if (seen.has(recordKey(record.id))) throw new Error('备份含重复牌谱，未导入'); seen.add(recordKey(record.id)); return record; });
     if (records.length) aggregatePageRecords(records, rules, true);
     return { type: BACKUP_TYPE, schemaVersion: 1, rules, records };
   }
@@ -187,7 +132,7 @@
     $('cancel-button').hidden = !value || !cancellable;
     $('cancel-button').disabled = false;
     ['import-backup', 'clear-data', 'warning-clear'].forEach((id) => $(id).disabled = value);
-    document.querySelectorAll('[data-remove]').forEach((button) => button.disabled = value);
+    document.querySelectorAll('[data-remove], [data-refresh-missing]').forEach((button) => button.disabled = value);
     $('parse-button').textContent = value ? '正在读取…' : '读取并计算牌谱';
   }
   function renderJobs() {
@@ -197,7 +142,7 @@
   function safeURL(raw) { try { const url = new URL(raw); return url.protocol === 'https:' ? url.href : ''; } catch (_) { return ''; } }
   function warningsHTML(warnings) { return warnings && warnings.length ? '<ul class="result-warnings">' + warnings.map((warning) => '<li>' + escapeHTML(typeof warning === 'string' ? warning : warning.message || '请核对牌谱数据') + '</li>').join('') + '</ul>' : ''; }
   function recordTable(result) {
-    return '<div class="table-scroll"><table class="result-table"><thead><tr><th>成员</th><th>最终点数</th><th>顺位</th><th>素点 PT</th><th>顺位马</th><th>净祝数</th><th>祝仪 PT</th><th>总 PT</th><th>折算数</th></tr></thead><tbody>' + result.entries.map((entry) => '<tr><td>' + escapeHTML(entry.name) + '</td><td>' + format(entry.points, 0) + '</td><td>' + format(entry.rank, 1) + '</td><td>' + numberHTML(entry.basePT) + '</td><td>' + numberHTML(entry.umaPT) + '</td><td>' + numberHTML(entry.chips) + '</td><td>' + numberHTML(entry.chipPT) + '</td><td>' + numberHTML(entry.totalPT) + '</td><td>' + numberHTML(entry.money) + '</td></tr>').join('') + '</tbody></table></div>';
+    return '<div class="table-scroll"><table class="result-table"><thead><tr><th>成员</th><th>最终点数</th><th>顺位</th><th>麻将 PT</th><th>净祝数</th><th>祝仪 PT</th><th>总 PT</th><th>折算数</th></tr></thead><tbody>' + result.entries.map((entry) => '<tr><td>' + escapeHTML(entry.name) + '</td><td>' + format(entry.points, 0) + '</td><td>' + format(entry.rank, 1) + '</td><td>' + numberHTML(entry.mahjongPT) + '</td><td>' + numberHTML(entry.chips) + '</td><td>' + numberHTML(entry.chipPT) + '</td><td>' + numberHTML(entry.totalPT) + '</td><td>' + numberHTML(entry.money, 2) + '</td></tr>').join('') + '</tbody></table></div>';
   }
   function eventsHTML(record, result) {
     const names = new Map(record.players.map((player) => [player.id, player.name]));
@@ -214,7 +159,7 @@
     try {
       aggregate = aggregatePageRecords(store.records, store.rules);
       const totals = aggregate.totals;
-      let html = '<section class="result-section"><div class="section-heading"><h2>累计结算</h2><span>' + store.records.length + ' 份牌谱 · 每祝 ' + format(store.rules.chipPT) + ' PT</span></div><div class="table-scroll"><table class="result-table"><thead><tr><th>成员</th><th>牌谱数</th><th>素点 PT</th><th>顺位马</th><th>净祝数</th><th>祝仪 PT</th><th>总 PT</th><th>折算数</th></tr></thead><tbody>' + aggregate.entries.map((entry) => '<tr><td title="' + escapeHTML((entry.names || [entry.name]).join(' / ')) + '">' + escapeHTML(entry.name) + '</td><td>' + format(entry.games, 0) + '</td><td>' + numberHTML(entry.basePT) + '</td><td>' + numberHTML(entry.umaPT) + '</td><td>' + numberHTML(entry.chips) + '</td><td>' + numberHTML(entry.chipPT) + '</td><td>' + numberHTML(entry.totalPT) + '</td><td>' + numberHTML(entry.money) + '</td></tr>').join('') + '</tbody><tfoot><tr><td>合计</td><td>—</td><td>' + numberHTML(totals.basePT) + '</td><td>' + numberHTML(totals.umaPT) + '</td><td>' + numberHTML(totals.chips) + '</td><td>' + numberHTML(totals.chipPT) + '</td><td>' + numberHTML(totals.totalPT) + '</td><td>' + numberHTML(totals.money) + '</td></tr></tfoot></table></div><p class="result-note">按雀魂成员 ID 合并，同名成员不会自动合并。表格可左右滑动；下方可展开每份牌谱与逐局祝仪。</p>' + warningsHTML(aggregate.warnings) + '</section><section class="result-section"><div class="section-heading"><h2>逐谱与逐局明细</h2></div>';
+      let html = '<section class="result-section"><div class="section-heading"><h2>累计结算</h2><span>' + store.records.length + ' 份牌谱 · 每祝 ' + format(store.rules.chipPT) + ' PT</span></div><div class="table-scroll"><table class="result-table"><thead><tr><th>成员</th><th>牌谱数</th><th>麻将 PT</th><th>净祝数</th><th>祝仪 PT</th><th>总 PT</th><th>折算数</th></tr></thead><tbody>' + aggregate.entries.map((entry) => '<tr><td title="' + escapeHTML((entry.names || [entry.name]).join(' / ')) + '">' + escapeHTML(entry.name) + '</td><td>' + format(entry.games, 0) + '</td><td>' + numberHTML(entry.mahjongPT) + '</td><td>' + numberHTML(entry.chips) + '</td><td>' + numberHTML(entry.chipPT) + '</td><td>' + numberHTML(entry.totalPT) + '</td><td>' + numberHTML(entry.money, 2) + '</td></tr>').join('') + '</tbody><tfoot><tr><td>合计</td><td>—</td><td>' + numberHTML(totals.mahjongPT) + '</td><td>' + numberHTML(totals.chips) + '</td><td>' + numberHTML(totals.chipPT) + '</td><td>' + numberHTML(totals.totalPT) + '</td><td>' + numberHTML(totals.money, 2) + '</td></tr></tfoot></table></div><p class="result-note">按雀魂成员 ID 合并，同名成员不会自动合并。表格可左右滑动；下方可展开每份牌谱与逐局祝仪。</p>' + warningsHTML(aggregate.warnings) + '</section><section class="result-section"><div class="section-heading"><h2>逐谱与逐局明细</h2></div>';
       aggregate.records.forEach((result, i) => {
         const record = store.records.find((item) => item.id === result.id);
         if (!record) return;
@@ -222,7 +167,12 @@
         html += '<details class="paipu-record"' + (aggregate.records.length === 1 ? ' open' : '') + '><summary>牌谱 ' + (i + 1) + '<span>' + record.players.length + ' 人 · ' + result.events.length + ' 次和牌</span></summary><div class="record-content"><div class="record-meta">' + (url ? '<a href="' + escapeHTML(url) + '" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">打开原始牌谱 ↗</a>' : '<span></span>') + '<button type="button" data-remove="' + escapeHTML(record.id) + '"' + (busy ? ' disabled' : '') + '>移除这份结果</button></div><p class="record-id">牌谱 ID：' + escapeHTML(record.id) + '</p>' + recordTable(result) + warningsHTML(result.warnings) + '<h3 class="round-heading">逐局祝仪明细</h3>' + eventsHTML(record, result) + '</div></details>';
       });
       $('results').innerHTML = html + '</section>';
-    } catch (e) { aggregate = null; $('export-csv').disabled = true; $('results').innerHTML = '<p class="notice error" role="alert">' + (e.code === 'YAKUMAN_METADATA_REQUIRED' ? '已保留 ' + store.records.length + ' 份牌谱，当前暂不能结算。请先导出 JSON 备份，再清空牌谱结果并重新读取完整牌谱。缺失信息不会当作 0。' : '结算失败：' + escapeHTML(e.message || '请检查规则与解析结果') + '。已保存的牌谱仍保留，可先导出 JSON 备份。') + '</p>'; }
+    } catch (e) {
+      aggregate = null; $('export-csv').disabled = true;
+      const missing = ['YAKUMAN_METADATA_REQUIRED', 'MISSING_OFFICIAL_PT'].includes(e.code);
+      const refreshable = missing && store.records.some((record) => needsMetadata(record) && safeURL(record.url));
+      $('results').innerHTML = '<div class="notice error" role="alert"><p>' + (missing ? '已保留 ' + store.records.length + ' 份牌谱。旧解析缺少官方结算分或役满信息，暂不能结算。重新读取同一链接或导入完整原始牌谱即可补齐，不会重复累计；缺失信息不会当作 0。' : '结算失败：' + escapeHTML(e.message || '请检查规则与解析结果') + '。已保存的牌谱仍保留，可先导出 JSON 备份。') + '</p>' + (refreshable ? '<button type="button" data-refresh-missing' + (busy ? ' disabled' : '') + '>补齐旧牌谱信息</button>' : '') + '</div>';
+    }
   }
   async function parse(event) {
     event.preventDefault(); if (busy) return;
@@ -234,7 +184,7 @@
     if (urls.length > 100) { status('一次最多读取 100 个牌谱链接，请分批读取。', 'error'); return; }
     controller = new AbortController(); setBusy(true, true);
     jobs = urls.map((url) => ({ url, state: 'pending', message: '等待读取' })); renderJobs();
-    let added = 0, skipped = 0, failed = 0, cancelled = false, connectionError = '';
+    let added = 0, refreshed = 0, skipped = 0, failed = 0, cancelled = false, connectionError = '';
     const seenInputs = new Set();
     try {
       if (!window.PaipuCloud || typeof window.PaipuCloud.connect !== 'function') throw new Error(PUBLIC_READ_ENABLED ? '公共牌谱连接模块未加载，请刷新页面后重试。' : '私有后台连接模块未加载，请刷新页面，或打开云端牌谱页面继续。');
@@ -246,15 +196,20 @@
         const job = jobs[i];
         if (controller.signal.aborted) { cancelled = true; break; }
         if (seenInputs.has(job.url)) { job.state = 'skipped'; job.message = '重复输入，跳过本条'; skipped++; renderJobs(); continue; }
-        if (store.records.some((record) => record.url === job.url)) { job.state = 'skipped'; job.message = '已存在，跳过重复牌谱'; skipped++; renderJobs(); continue; }
+        if (store.records.some((record) => record.url === job.url && !needsMetadata(record))) { job.state = 'skipped'; job.message = '已存在，跳过重复牌谱'; skipped++; renderJobs(); continue; }
         seenInputs.add(job.url); job.state = 'loading'; job.message = '正在读取牌谱…'; status('正在读取第 ' + (i + 1) + ' / ' + jobs.length + ' 条牌谱'); renderJobs();
         try {
           const raw = await modules().client.fetchRecord(job.url, { loader, signal: controller.signal, onProgress: (progress) => { if (job.state !== 'loading') return; const message = typeof progress === 'string' ? progress : progress?.message; if (message) { job.message = String(message).slice(0, 200); renderJobs(); } } });
           if (controller.signal.aborted) { cancelled = true; job.state = 'cancelled'; job.message = '已取消，未加入结果'; break; }
           const record = validatedRecord(raw);
           calculateRecord(record, store.rules);
-          if (store.records.some((item) => item.id === record.id)) { skipped++; job.state = 'skipped'; job.message = '牌谱 ID 已存在，未重复累计'; }
-          else { store.records.push(record); added++; job.state = 'done'; job.message = '读取并计算完成'; save(); renderResults(); }
+          const existing = store.records.findIndex((item) => recordKey(item.id) === recordKey(record.id));
+          if (existing >= 0 && !needsMetadata(store.records[existing])) { skipped++; job.state = 'skipped'; job.message = '牌谱 ID 已存在，未重复累计'; }
+          else {
+            if (existing >= 0) { store.records[existing] = record; refreshed++; job.message = '已补齐旧牌谱信息，未重复累计'; }
+            else { store.records.push(record); added++; job.message = '读取并计算完成'; }
+            job.state = 'done'; save(); renderResults();
+          }
         } catch (e) {
           if (controller.signal.aborted || e.name === 'AbortError') { cancelled = true; job.state = 'cancelled'; job.message = '已取消，未加入结果'; break; }
           failed++; job.state = 'failed'; job.message = e.message || '读取失败，请检查链接后重试';
@@ -270,7 +225,7 @@
     } finally {
       jobs.forEach((job) => { if (job.state === 'pending' || job.state === 'loading') { job.state = 'cancelled'; job.message = '已取消，尚未读取'; } });
       setBusy(false); controller = null; renderJobs(); renderResults();
-      status((connectionError ? connectionError + ' ' : '') + (cancelled ? '已取消剩余读取。' : '本次读取结束。') + '新增 ' + added + ' 份，重复跳过 ' + skipped + ' 份，失败 ' + failed + ' 份。' + (failed ? '未成功的牌谱没有计入结算。' : ''), failed || cancelled ? 'warning' : '');
+      status((connectionError ? connectionError + ' ' : '') + (cancelled ? '已取消剩余读取。' : '本次读取结束。') + '新增 ' + added + ' 份，补齐 ' + refreshed + ' 份，重复跳过 ' + skipped + ' 份，失败 ' + failed + ' 份。' + (failed ? '未成功的牌谱没有计入结算。' : ''), failed || cancelled ? 'warning' : '');
     }
   }
   function download(filename, content, mime) {
@@ -284,17 +239,17 @@
     try {
       if (!store.records.length) return;
       const result = aggregatePageRecords(store.records, store.rules);
-      const lines = [['类型', '牌谱 ID', '成员 ID', '成员', '牌谱数', '最终点数', '顺位', '素点 PT', '顺位马 PT', '净祝数', '祝仪 PT', '总 PT', '折算数', '局', '和牌者', '方式', '触发', '触发祝数（每名付款者）', '付款者', '收款者', '支付祝数', '牌谱役满倍数', '役满计费份数', '役满每份祝数', '役满荣和每份祝数设置', '役满自摸每家每份设置', '役满倍数规则']];
+      const lines = [['类型', '牌谱 ID', '成员 ID', '成员', '牌谱数', '最终点数', '顺位', '麻将 PT', '净祝数', '祝仪 PT', '总 PT', '折算数', '局', '和牌者', '方式', '触发', '触发祝数（每名付款者）', '付款者', '收款者', '支付祝数', '牌谱役满倍数', '役满计费份数', '役满每份祝数', '役满荣和每份祝数设置', '役满自摸每家每份设置', '役满倍数规则']];
       const addRow = (row, detail) => lines.push([...row, detail?.type === 'yakuman' ? detail.yakumanUnits ?? '' : '', detail?.type === 'yakuman' ? detail.chargedUnits ?? '' : '', detail?.type === 'yakuman' ? detail.chipsPerUnit ?? '' : '', store.rules.yakumanRonChips, store.rules.yakumanTsumoChips, store.rules.doubleYakuman]);
-      result.entries.forEach((entry) => addRow(['累计结算', '', entry.playerId, entry.name, entry.games, '', '', entry.basePT, entry.umaPT, entry.chips, entry.chipPT, entry.totalPT, entry.money, '', '', '', '', '', '', '', '']));
+      result.entries.forEach((entry) => addRow(['累计结算', '', entry.playerId, entry.name, entry.games, '', '', entry.mahjongPT, entry.chips, entry.chipPT, entry.totalPT, entry.money, '', '', '', '', '', '', '', '']));
       result.records.forEach((record) => {
-        record.entries.forEach((entry) => addRow(['逐谱结算', record.id, entry.playerId, entry.name, 1, entry.points, entry.rank, entry.basePT, entry.umaPT, entry.chips, entry.chipPT, entry.totalPT, entry.money, '', '', '', '', '', '', '', '']));
+        record.entries.forEach((entry) => addRow(['逐谱结算', record.id, entry.playerId, entry.name, 1, entry.points, entry.rank, entry.mahjongPT, entry.chips, entry.chipPT, entry.totalPT, entry.money, '', '', '', '', '', '', '', '']));
         const names = new Map(record.entries.map((entry) => [entry.playerId, entry.name]));
         record.events.forEach((event) => {
-          if (!event.details.length) addRow(['和牌明细', record.id, '', '', '', '', '', '', '', '', '', '', '', event.label, names.get(event.winner), event.zimo ? '自摸' : '荣和', '无祝仪', 0, '', '', 0]);
+          if (!event.details.length) addRow(['和牌明细', record.id, '', '', '', '', '', '', '', '', '', '', event.label, names.get(event.winner), event.zimo ? '自摸' : '荣和', '无祝仪', 0, '', '', 0]);
           event.details.forEach((detail) => {
-            if (!detail.transfers.length) addRow(['祝仪来源明细', record.id, '', '', '', '', '', '', '', '', '', '', '', event.label, names.get(event.winner), event.zimo ? '自摸' : '荣和', detail.label, detail.count, '', names.get(event.winner), 0], detail);
-            detail.transfers.forEach((transfer) => addRow(['祝仪支付明细', record.id, '', '', '', '', '', '', '', '', '', '', '', event.label, names.get(event.winner), event.zimo ? '自摸' : '荣和', detail.label, detail.count, names.get(transfer.from), names.get(transfer.to), transfer.chips], detail));
+            if (!detail.transfers.length) addRow(['祝仪来源明细', record.id, '', '', '', '', '', '', '', '', '', '', event.label, names.get(event.winner), event.zimo ? '自摸' : '荣和', detail.label, detail.count, '', names.get(event.winner), 0], detail);
+            detail.transfers.forEach((transfer) => addRow(['祝仪支付明细', record.id, '', '', '', '', '', '', '', '', '', '', event.label, names.get(event.winner), event.zimo ? '自摸' : '荣和', detail.label, detail.count, names.get(transfer.from), names.get(transfer.to), transfer.chips], detail));
           });
         });
       });
@@ -323,10 +278,13 @@
         }
         const record = validatedRecord(parsed);
         calculateRecord(record, store.rules, true);
-        if (store.records.some((item) => item.id === record.id)) { status('该牌谱 ID 已存在，未重复加入或累计。'); return; }
-        if (!window.confirm('将这份 ' + record.players.length + ' 人牌谱加入当前结果，并按当前规则计算？' + (readFailed ? '原存档自动保存已暂停，本次只加入内存结果；请导出备份后再恢复保存。' : '现有结果会保留。'))) { status('已取消导入，当前结果保留。'); return; }
-        store.records.push(record);
-        message = '已解析并加入 1 份牌谱';
+        const existing = store.records.findIndex((item) => recordKey(item.id) === recordKey(record.id));
+        const refresh = existing >= 0 && needsMetadata(store.records[existing]) && !needsMetadata(record);
+        if (existing >= 0 && !refresh) { status('该牌谱 ID 已存在，未重复加入或累计。补齐旧记录需要包含官方结算分及役满信息的完整牌谱。'); return; }
+        if (!window.confirm((refresh ? '用完整解析补齐这份旧牌谱信息？不会重复累计。' : '将这份 ' + record.players.length + ' 人牌谱加入当前结果，并按当前规则计算？') + (readFailed ? '原存档自动保存已暂停，本次只加入内存结果；请导出备份后再恢复保存。' : '现有结果会保留。'))) { status('已取消导入，当前结果保留。'); return; }
+        if (refresh) store.records[existing] = record;
+        else store.records.push(record);
+        message = refresh ? '已补齐 1 份旧牌谱，未重复累计' : '已解析并加入 1 份牌谱';
       }
       jobs = []; renderJobs();
       const saved = save(replaceBackup); renderResults();
@@ -353,7 +311,16 @@
   $('clear-data').addEventListener('click', clearData);
   $('warning-clear').addEventListener('click', clearData);
   $('export-original').addEventListener('click', () => { if (originalRaw !== null) download('牌谱原始存档-' + fileDate() + '.txt', originalRaw, 'text/plain;charset=utf-8'); });
-  $('results').addEventListener('click', (event) => { const button = event.target.closest('[data-remove]'); if (!button || busy || !window.confirm('移除这份牌谱的解析结果？')) return; store.records = store.records.filter((record) => record.id !== button.dataset.remove); const saved = save(); renderResults(); status(saved ? '这份牌谱已移除。' : '内存中的结果已移除，浏览器存档尚未更新。', saved ? '' : 'warning'); });
+  $('results').addEventListener('click', (event) => {
+    if (busy) return;
+    if (event.target.closest('[data-refresh-missing]')) {
+      $('paipu-urls').value = store.records.filter((record) => needsMetadata(record) && safeURL(record.url)).map((record) => record.url).slice(0, 100).join('\n');
+      $('paipu-form').requestSubmit(); return;
+    }
+    const button = event.target.closest('[data-remove]');
+    if (!button || !window.confirm('移除这份牌谱的解析结果？')) return;
+    store.records = store.records.filter((record) => record.id !== button.dataset.remove); const saved = save(); renderResults(); status(saved ? '这份牌谱已移除。' : '内存中的结果已移除，浏览器存档尚未更新。', saved ? '' : 'warning');
+  });
   window.addEventListener('offline', networkState);
   window.addEventListener('online', networkState);
   try { modules(); } catch (e) { $('module-error').textContent = e.message; $('module-error').hidden = false; $('parse-button').disabled = true; }

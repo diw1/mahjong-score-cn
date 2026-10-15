@@ -10,9 +10,9 @@
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="stylesheet" href="paipu.css?v=3">
   <script src="paipu-cloud.js?v=4" defer></script>
-  <script src="paipu-client.js" defer></script>
-  <script src="paipu-settlement.js" defer></script>
-  <script src="paipu.js?v=3" defer></script>
+  <script src="paipu-client.js?v=5" defer></script>
+  <script src="paipu-settlement.js?v=5" defer></script>
+  <script src="paipu.js?v=5" defer></script>
   <script src="web-app.js" defer></script>
 </head>
 <body>
@@ -45,11 +45,11 @@
           </div>
           <details class="rule-details">
             <summary>固定结算规则</summary>
-            <p>返还点数固定 25,000；四麻顺位马 +15 / +5 / −5 / −15，三麻顺位马为 0，按牌谱人数自动处理。</p>
+            <p>麻将 PT 直接采用雀魂牌谱的最终结算分，已包含素点与顺位马，按该牌谱的规则计算。</p>
             <p>一发、红宝、里宝各计 1 祝；多个红宝或里宝按数量计算。自摸由其余各家支付，荣和由放铳者支付。</p>
             <p>役满荣和每份 10 祝，自摸由其余每家每份支付 5 祝；双倍或复合役满按牌谱倍数叠加。</p>
-            <p>旧解析结果若没有役满元信息，会保留牌谱并提示暂不能结算。请先导出 JSON 备份，再清空牌谱结果并重新读取完整牌谱；缺失信息不会当作 0。</p>
-            <p>素点 PT =（最终点数 − 返还点数）÷ 1,000。总 PT = 素点 PT + 顺位马 + 净祝数 × 每祝 PT；折算数 = 总 PT × 折算倍率。</p>
+            <p>旧解析结果若缺少官方结算分或役满信息，会保留记录。重新读取同一牌谱可补齐信息，不会重复累计。</p>
+            <p>总 PT = 麻将 PT + 净祝数 × 每祝 PT；折算数 = 总 PT × 折算倍率。</p>
           </details>
           <p id="rule-error" class="form-error" role="alert" hidden></p>
           <div class="submit-row"><button class="primary-button" id="parse-button" type="submit">读取并计算牌谱</button></div>

@@ -7,6 +7,7 @@ const expectedPoints=[24200,8700,49400,17700];
 function inspect(record){
   assert.deepEqual(record.players.map(p=>p.name),['Test 0','Test 1','Test 2','Test 3']);
   assert.deepEqual(record.result.map(p=>p.points),expectedPoints);
+  assert.deepEqual(record.result.map(p=>p.officialPT),[-0.8,-16.3,24.4,-7.3]);
   assert.deepEqual(record.rounds.map(r=>[r.winner,r.from,r.zimo,r.aka,r.ura,r.ippatsu]),[[2,1,false,1,0,false],[0,null,true,0,0,true],[2,null,true,2,0,false]]);
 }
 for(const version of ['old','actions']){
@@ -14,7 +15,53 @@ for(const version of ['old','actions']){
   for(const kind of ['wrapper','detail']) test('compiler fixture '+version+' '+kind+' with metadata',()=>inspect(Client.parseRecord(binary(fixture[version][kind]),{head:fixture.head})));
   test('compiler JSON fixture '+version,()=>inspect(Client.parseRecord(JSON.stringify(fixture[version].json))));
 }
-test('signed int32 raw points remain negative and ranked total_point is ignored',()=>assert.deepEqual(Client.parseRecord(fixture.negative).result.map(p=>p.points),[-1000,51000,30000,20000]));
+test('signed int32 raw points stay separate from official final PT',()=>{
+  const record=Client.parseRecord(fixture.negative);
+  assert.deepEqual(record.result.map(p=>p.points),[-1000,51000,30000,20000]);
+  assert.deepEqual(record.result.map(p=>p.officialPT),[-0.8,-16.3,24.4,-7.3]);
+});
+
+test('official final PT comes only from total_point in thousandths, with snake and camel JSON names',()=>{
+  const source=structuredClone(fixture.old.json),totals=[-31500,-15123,52250,-5627];
+  source.head.result.players.forEach((p,i)=>p.total_point=totals[i]);
+  delete source.head.result.players[2].total_point;source.head.result.players[2].totalPoint=totals[2];
+  const record=Client.parseRecord(source);
+  assert.deepEqual(record.result.map(p=>p.officialPT),[-31.5,-15.123,52.25,-5.627]);
+  assert.deepEqual(record.result.map(p=>p.points),expectedPoints);
+  assert.notEqual(record.result[0].officialPT,(expectedPoints[0]-25000)/1000);
+});
+
+test('JSON absent official metadata and old normalized files stay unknown while explicit zero stays zero',()=>{
+  const source=structuredClone(fixture.old.json);
+  source.head.result.players.forEach(p=>delete p.total_point);
+  source.head.result.players[1].total_point=0;
+  const record=Client.parseRecord(source);
+  assert.equal(Object.hasOwn(record.result[0],'officialPT'),false);
+  assert.equal(Object.hasOwn(record.result[1],'officialPT'),true);assert.equal(record.result[1].officialPT,0);
+  record.result.forEach(p=>delete p.officialPT);
+  for(const copy of [Client.validateRecord(record),Client.parseRecord(JSON.stringify(record))])assert.ok(copy.result.every(p=>!Object.hasOwn(p,'officialPT')));
+});
+
+test('explicit metadata result keeps official PT without reconstructing it from point totals',()=>{
+  const sourceHead=structuredClone(fixture.head);delete sourceHead.result;
+  const result=expectedPoints.map((points,seat)=>({seat,points,officialPT:[0,-3.001,3.001,0][seat]}));
+  assert.deepEqual(Client.parseRecord(binary(fixture.old.wrapper),{head:sourceHead,result}).result,result);
+});
+
+test('official PT must be a finite numeric signed-int32 thousandth and is never coerced',()=>{
+  for(const value of [null,'0',false,{},NaN,Infinity,-Infinity,0.0001,2147483.648,-2147483.649]){
+    const record=Client.parseRecord(fixture.old.json);record.result[0].officialPT=value;
+    assert.throws(()=>Client.validateRecord(record),e=>e.code==='INVALID_RECORD');
+  }
+  for(const value of [null,'0',false,{},1.5,2147483648,-2147483649]){
+    const source=structuredClone(fixture.old.json);source.head.result.players[0].total_point=value;
+    assert.throws(()=>Client.parseRecord(source),e=>e.code==='INVALID_RECORD');
+  }
+  for(const value of [0,0.001,-0.001,1.001,2147483.647,-2147483.648]){
+    const record=Client.parseRecord(fixture.old.json);record.result[0].officialPT=value;
+    assert.equal(Client.validateRecord(record).result[0].officialPT,value);
+  }
+});
 test('permission errors cannot yield a record',()=>{
   assert.throws(()=>Client.parseRecord(binary(fixture.notLoginFrame)),e=>e.code==='ERR_NOT_LOGIN'&&e.details.serverCode===1004);
   assert.throws(()=>Client.parseRecord({error:{code:1004}}),e=>e.code==='ERR_NOT_LOGIN');
@@ -131,6 +178,21 @@ test('new raw wins explicitly carry zero; old normalized wins retain unknown met
 function vint(n){const out=[];let value=BigInt(n);do{let b=Number(value&127n);value>>=7n;if(value)b|=128;out.push(b);}while(value);return out;}
 function pv(id,n){return [...vint(id*8),...vint(n)];}
 function pb(id,value){const b=typeof value==='string'?Buffer.from(value):value;return [...vint(id*8+2),...vint(b.length),...b];}
+function responseWithOfficialTotals(totals,omitZeros=false){
+  const signed=(id,n)=>pv(id,BigInt.asUintN(64,BigInt(n)));
+  const players=totals.flatMap((n,seat)=>pb(1,[...pv(1,seat),...(omitZeros&&n===0?[]:signed(2,n)),...signed(3,expectedPoints[seat])]));
+  const accounts=[0,1,2,3].flatMap(seat=>pb(11,[...pv(1,100+seat),...pv(2,seat),...pb(3,'Test '+seat)]));
+  const head=[...pb(1,'synthetic-only'),...accounts,...pb(12,players)];
+  return Uint8Array.from([...pb(3,head),...pb(4,binary(fixture.old.detail))]);
+}
+test('binary total_point field 2 preserves signed thousandths and proto3 omitted zero',()=>{
+  const totals=[0,-15123,20750,-5627];
+  for(const omitZeros of [false,true]){
+    const record=Client.parseRecord(responseWithOfficialTotals(totals,omitZeros));
+    assert.deepEqual(record.result.map(p=>p.officialPT),[0,-15.123,20.75,-5.627]);
+    assert.deepEqual(record.result.map(p=>p.points),expectedPoints);
+  }
+});
 function winBinary(yiman,count,fans){
   const hule=[...pv(5,1),...pv(10,yiman?1:0),...pv(11,count),...fans.flatMap(f=>pb(12,[...pv(2,f.val),...pv(3,f.id)]))];
   const newRound=pb(2,pb(5,[25000,25000,25000,25000].flatMap(vint)));

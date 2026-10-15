@@ -258,3 +258,99 @@ test('browser UMD export works without external libraries', () => {
   assert.equal(typeof context.PaipuSettlement.calculate, 'function');
   assert.equal(typeof context.PaipuSettlement.aggregateRecords, 'function');
 });
+
+function officialFixture() {
+  const record = fixture();
+  record.result.forEach((row, seat) => { row.officialPT = [5, -51.1, 73.9, -27.8][seat]; });
+  return record;
+}
+
+test('official mode uses authoritative Mahjong PT once, then adds chips without applying local uma', () => {
+  const record = officialFixture(), before = structuredClone(record);
+  const result = Settlement.calculate(record, { scoreMode: 'official', returnPoints: 30000, uma: [15, 5, -5, -15], tieMode: 'split' });
+  assert.deepEqual(result.entries.map(row => row.mahjongPT), [5, -51.1, 73.9, -27.8]);
+  assert.deepEqual(result.entries.map(row => row.chips), [1, -4, 6, -3]);
+  assert.deepEqual(result.entries.map(row => row.totalPT), [8, -63.1, 91.9, -36.8]);
+  assert.deepEqual(result.entries.map(row => row.money), [80, -631, 919, -368]);
+  assert.equal(result.rules.scoreMode, 'official'); assert.equal(result.rules.tieMode, 'seat');
+  assert.equal(Object.hasOwn(result.rules, 'uma'), false); assert.equal(Object.hasOwn(result.rules, 'returnPoints'), false);
+  assert.ok(result.entries.every(row => !Object.hasOwn(row, 'basePT') && !Object.hasOwn(row, 'umaPT')));
+  assert.deepEqual(Object.keys(result.totals), ['mahjongPT', 'chips', 'chipPT', 'totalPT', 'money']);
+  assert.equal(result.warnings.length, 0);
+  Object.values(result.totals).forEach(value => near(value, 0));
+  assert.deepEqual(record, before);
+});
+
+test('official mode does not derive PT from a fixed starting pool, point unit, or local return rule', () => {
+  const record = officialFixture(); record.startPoints = 35000;
+  record.result.forEach((row, seat) => { row.points = [24001, -999, 60000, 12000][seat]; });
+  const result = Settlement.calculate(record, { scoreMode: 'official', returnPoints: 'unused', uma: null, tieMode: 'unused' });
+  assert.deepEqual(result.entries.map(row => row.points), [24001, -999, 60000, 12000]);
+  assert.deepEqual(result.entries.map(row => row.mahjongPT), [5, -51.1, 73.9, -27.8]);
+  assert.throws(() => Settlement.calculate(record), /100 的整数倍/);
+  for (const points of [NaN, Infinity, 1.5, '10000', Number.MAX_SAFE_INTEGER]) {
+    const bad = structuredClone(record); bad.result[0].points = points;
+    assert.throws(() => Settlement.calculate(bad, { scoreMode: 'official' }), /终局点数/);
+  }
+  const duplicate = officialFixture(); duplicate.players[1].id = duplicate.players[0].id;
+  assert.throws(() => Settlement.calculate(duplicate, { scoreMode: 'official' }), error => error.code === 'DUPLICATE_PLAYER');
+  const badSeat = officialFixture(); badSeat.result[1].seat = badSeat.result[0].seat;
+  assert.throws(() => Settlement.calculate(badSeat, { scoreMode: 'official' }), /重复玩家/);
+});
+
+test('missing official PT is explicit; zero is valid and malformed or non-int32 metadata is rejected', () => {
+  const record = officialFixture(); delete record.result[0].officialPT;
+  assert.throws(() => Settlement.calculate(record, { scoreMode: 'official' }), error => error.code === 'MISSING_OFFICIAL_PT');
+  record.result[0].officialPT = 0;
+  assert.equal(Settlement.calculate(record, { scoreMode: 'official' }).entries[0].mahjongPT, 0);
+  for (const officialPT of [null, '0', NaN, Infinity, -Infinity, 0.0001, 2147483.648, -2147483.649]) {
+    record.result[0].officialPT = officialPT;
+    assert.throws(() => Settlement.calculate(record, { scoreMode: 'official' }), error => error.code === 'INVALID_OFFICIAL_PT');
+  }
+  for (const officialPT of [2147483.647, -2147483.648, 1.001, -0.001]) {
+    record.result[0].officialPT = officialPT;
+    assert.equal(Settlement.calculate(record, { scoreMode: 'official', pointRate: 0 }).entries[0].mahjongPT, officialPT);
+  }
+  assert.throws(() => Settlement.calculate(officialFixture(), { scoreMode: 'guess' }), error => error.code === 'INVALID_RULE');
+});
+
+test('official mode aggregates mixed sanma and yonma by stable ID without inventing rank bonuses', () => {
+  const four = officialFixture(), three = officialFixture(); three.id = 'synthetic-official-sanma';
+  three.players = three.players.slice(0, 3); three.startPoints = 35000;
+  three.result = [50000, 35000, 20000].map((points, seat) => ({ seat, points, officialPT: [40, 0, -40][seat] }));
+  three.rounds = [{ winner: 2, zimo: true, ura: 1, yakumanUnits: 2 }];
+  const result = Settlement.aggregateRecords([four, three], { scoreMode: 'official' });
+  assert.deepEqual(result.entries.map(row => row.mahjongPT), [45, -51.1, 33.9, -27.8]);
+  assert.deepEqual(result.entries.map(row => row.chips), [-10, -15, 28, -3]);
+  assert.deepEqual(result.entries.map(row => row.totalPT), [15, -96.1, 117.9, -36.8]);
+  assert.deepEqual(result.entries.map(row => row.money), [150, -961, 1179, -368]);
+  assert.deepEqual(result.entries.map(row => row.games), [2, 2, 2, 1]);
+  assert.equal(result.records[1].events[0].transfers.length, 2);
+  assert.equal(result.records[1].events[0].details.find(row => row.type === 'yakuman').count, 10);
+  assert.ok(result.entries.every(row => !Object.hasOwn(row, 'basePT') && !Object.hasOwn(row, 'umaPT')));
+  Object.values(result.totals).forEach(value => near(value, 0));
+  assert.throws(() => Settlement.aggregateRecords([four, four], { scoreMode: 'official' }), error => error.code === 'DUPLICATE_RECORD');
+});
+
+test('official PT never suppresses missing yakuman metadata or alters ron source charges', () => {
+  const record = officialFixture();
+  record.rounds = [{ winner: 1, from: 3, zimo: false, aka: 2, ura: 3, ippatsu: true, yakumanUnits: 2 }];
+  const result = Settlement.calculate(record, { scoreMode: 'official' });
+  assert.deepEqual(result.entries.map(row => row.chips), [0, 26, 0, -26]);
+  assert.deepEqual(result.events[0].details.map(row => [row.type, row.count]), [['aka', 2], ['ura', 3], ['ippatsu', 1], ['yakuman', 20]]);
+  delete record.rounds[0].yakumanUnits;
+  assert.throws(() => Settlement.calculate(record, { scoreMode: 'official' }), error => error.code === 'YAKUMAN_METADATA_REQUIRED');
+});
+
+test('official empty totals and nonzero source totals retain their own shape and value', () => {
+  assert.deepEqual(Settlement.aggregateRecords([], { scoreMode: 'official' }).totals, { mahjongPT: 0, chips: 0, chipPT: 0, totalPT: 0, money: 0 });
+  const record = officialFixture(); record.rounds = [];
+  record.result.forEach((row, seat) => { row.officialPT = [0.333, 0.333, 0.333, 0.001][seat]; });
+  const result = Settlement.calculate(record, { scoreMode: 'official', pointRate: 1 });
+  assert.equal(result.totals.mahjongPT, 1); assert.equal(result.totals.totalPT, 1); assert.equal(result.totals.money, 1);
+  const aggregate = Settlement.aggregateRecords([record, { ...record, id: 'synthetic-official-second' }], { scoreMode: 'official', pointRate: 1 });
+  assert.equal(aggregate.totals.mahjongPT, 2); assert.equal(aggregate.totals.money, 2);
+  assert.deepEqual(aggregate.entries.map(row => row.money), result.entries.map(row => row.money * 2));
+  const custom = Settlement.calculate(record, { scoreMode: 'custom', uma: [15, 5, -5, -15] });
+  assert.ok(custom.entries.every(row => Object.hasOwn(row, 'basePT') && Object.hasOwn(row, 'umaPT') && !Object.hasOwn(row, 'mahjongPT')));
+});

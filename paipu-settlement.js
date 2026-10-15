@@ -8,6 +8,7 @@
 
   const EPS = 1e-8;
   const FIELDS = ['basePT', 'umaPT', 'chips', 'chipPT', 'totalPT', 'money'];
+  const OFFICIAL_FIELDS = ['mahjongPT', 'chips', 'chipPT', 'totalPT', 'money'];
   const SOURCES = [{ key: 'aka', label: '红宝牌' }, { key: 'ura', label: '里宝牌' }, { key: 'ippatsu', label: '一发' }, { key: 'yakuman', label: '役满' }];
 
   class PaipuError extends Error {
@@ -55,11 +56,18 @@
 
   function normalizeRules(input, playerCount) {
     const rules = Object.assign({ chipPT: 3, pointRate: 10, returnPoints: 25000, uma: Array(playerCount).fill(0), tieMode: 'seat', yakumanRonChips: 10, yakumanTsumoChips: 5, doubleYakuman: 'count' }, input || {});
+    check(rules.scoreMode === undefined || rules.scoreMode === 'custom' || rules.scoreMode === 'official', '麻将 PT 来源规则无效。', 'INVALID_RULE');
     nonnegative(rules.chipPT, '每祝 PT');
     nonnegative(rules.pointRate, '每 PT 金额');
     check(Number.isSafeInteger(rules.yakumanRonChips) && rules.yakumanRonChips >= 0, '役满荣和每份祝数必须是非负整数。', 'INVALID_RULE');
     check(Number.isSafeInteger(rules.yakumanTsumoChips) && rules.yakumanTsumoChips >= 0, '役满自摸每家每份祝数必须是非负整数。', 'INVALID_RULE');
     check(rules.doubleYakuman === 'count' || rules.doubleYakuman === 'single', '役满倍数处理无效。', 'INVALID_RULE');
+    if (rules.scoreMode === 'official') {
+      // Official PT already includes the game's own rank/return rules. Keep
+      // inactive local options out of the result rather than applying them twice.
+      return { scoreMode: 'official', chipPT: rules.chipPT, pointRate: rules.pointRate, tieMode: 'seat',
+        yakumanRonChips: rules.yakumanRonChips, yakumanTsumoChips: rules.yakumanTsumoChips, doubleYakuman: rules.doubleYakuman };
+    }
     check(Number.isSafeInteger(rules.returnPoints) && rules.returnPoints > 0 && rules.returnPoints % 100 === 0,
       '返还点数必须是正整数且为 100 的倍数。', 'INVALID_RULE');
     // A no-uma profile is equivalent for three and four players; nonzero profiles are not.
@@ -73,8 +81,9 @@
     return rules;
   }
 
-  function totals(entries) {
-    return Object.fromEntries(FIELDS.map(field => [field, clean(sum(entries.map(entry => entry[field])))]));
+  function scoreFields(rules) { return rules.scoreMode === 'official' ? OFFICIAL_FIELDS : FIELDS; }
+  function totals(entries, rules) {
+    return Object.fromEntries(scoreFields(rules).map(field => [field, clean(sum(entries.map(entry => entry[field])))]));
   }
 
   function calculate(record, inputRules) {
@@ -83,6 +92,7 @@
     const playerCount = record.players.length;
     const recordId = id(record.id, '牌谱');
     const rules = normalizeRules(inputRules, playerCount);
+    const official = rules.scoreMode === 'official';
     const players = record.players.map(player => {
       check(player && typeof player === 'object', '玩家信息无效。');
       check(Number.isInteger(player.seat) && player.seat >= 0 && player.seat < playerCount, '玩家座位无效。');
@@ -98,34 +108,42 @@
       return player;
     };
     const startPoints = record.startPoints === undefined ? 25000 : record.startPoints;
-    check(Number.isSafeInteger(startPoints) && startPoints > 0 && startPoints % 100 === 0, '起始点数无效。');
+    if (!official) check(Number.isSafeInteger(startPoints) && startPoints > 0 && startPoints % 100 === 0, '起始点数无效。');
     check(Array.isArray(record.result) && record.result.length === playerCount, '终局结果不完整。');
     const results = new Map();
+    const officialScores = new Map();
     for (const result of record.result) {
       check(result && typeof result === 'object', '终局结果无效。');
       const player = resolve(result.seat, '终局');
       check(!results.has(player.id), '终局结果包含重复玩家。');
-      check(Number.isSafeInteger(result.points) && result.points % 100 === 0, '终局点数必须是 100 的整数倍。');
+      check(Number.isSafeInteger(result.points) && (official || result.points % 100 === 0), official ? '终局点数必须是安全整数。' : '终局点数必须是 100 的整数倍。');
       check(Math.abs(result.points) <= Number.MAX_SAFE_INTEGER / (playerCount + 1), '终局点数过大。');
       results.set(player.id, result.points);
+      if (official) {
+        check(result.officialPT !== undefined, '牌谱缺少雀魂官方麻将 PT，请重新读取完整原始牌谱。', 'MISSING_OFFICIAL_PT');
+        const scaled = finite(result.officialPT) ? Math.round(result.officialPT * 1000) : NaN;
+        check(Number.isInteger(scaled) && scaled >= -2147483648 && scaled <= 2147483647 && result.officialPT === scaled / 1000,
+          '雀魂官方麻将 PT 必须是有效的官方千分位数值。', 'INVALID_OFFICIAL_PT');
+        officialScores.set(player.id, clean(result.officialPT));
+      }
     }
-    check(sum([...results.values()]) === startPoints * playerCount,
+    if (!official) check(sum([...results.values()]) === startPoints * playerCount,
       '终局点数合计应为 ' + startPoints * playerCount + '。', 'POINTS_TOTAL');
     check(Array.isArray(record.rounds), '牌谱和牌明细缺失。');
     const entries = players.map(player => ({
       playerId: player.id, seat: player.seat, name: player.name, points: results.get(player.id),
-      basePT: clean((results.get(player.id) - rules.returnPoints) / 1000),
-      rank: 0, umaPT: 0, chips: 0, chipPT: 0, totalPT: 0, money: 0
+      ...(official ? { mahjongPT: officialScores.get(player.id) } : { basePT: clean((results.get(player.id) - rules.returnPoints) / 1000), umaPT: 0 }),
+      rank: 0, chips: 0, chipPT: 0, totalPT: 0, money: 0
     }));
     const entryById = new Map(entries.map(entry => [entry.playerId, entry]));
     const sorted = entries.slice().sort((a, b) => b.points - a.points || a.seat - b.seat);
     for (let position = 0; position < sorted.length;) {
       let end = position + 1;
       if (rules.tieMode === 'split') while (end < sorted.length && sorted[end].points === sorted[position].points) end++;
-      const umaPT = clean(sum(rules.uma.slice(position, end)) / (end - position));
+      const umaPT = official ? 0 : clean(sum(rules.uma.slice(position, end)) / (end - position));
       for (let index = position; index < end; index++) {
         sorted[index].rank = position + 1;
-        sorted[index].umaPT = umaPT;
+        if (!official) sorted[index].umaPT = umaPT;
       }
       position = end;
     }
@@ -173,7 +191,7 @@
     });
     entries.forEach(entry => {
       entry.chipPT = clean(entry.chips * rules.chipPT);
-      entry.totalPT = clean(entry.basePT + entry.umaPT + entry.chipPT);
+      entry.totalPT = clean((official ? entry.mahjongPT : entry.basePT + entry.umaPT) + entry.chipPT);
       check(finite(entry.totalPT) && Number.isSafeInteger(entry.chips), '祝仪数量或积分过大。');
     });
     const cents = moneyCents(entries.map(entry => entry.totalPT * rules.pointRate));
@@ -181,16 +199,16 @@
     const warnings = [];
     if (missingYakuman) warnings.push('部分和牌明细缺少役满份数；役满祝未计入，请重新读取原始牌谱补齐元信息。');
     if (disabledYakuman) warnings.push('检测到役满，但对应役满祝数设为 0，当前未另计役满祝。');
-    if (rules.returnPoints !== startPoints) warnings.push('返点与起始点不同；本模块按素点公式计算，未加入头名奖（Oka），总 PT 和金额可能不为 0。');
-    if (rules.uma.some(value => value !== 0)) warnings.push('已使用自定义顺位马；该结果与原站 103 的无顺位马结果不同。');
-    return { id: recordId, url: typeof record.url === 'string' ? record.url : '', rules, entries, events, totals: totals(entries), warnings };
+    if (!official && rules.returnPoints !== startPoints) warnings.push('返点与起始点不同；本模块按素点公式计算，未加入头名奖（Oka），总 PT 和金额可能不为 0。');
+    if (!official && rules.uma.some(value => value !== 0)) warnings.push('已使用自定义顺位马；该结果与原站 103 的无顺位马结果不同。');
+    return { id: recordId, url: typeof record.url === 'string' ? record.url : '', rules, entries, events, totals: totals(entries, rules), warnings };
   }
 
   function aggregateRecords(records, rules) {
     check(Array.isArray(records), '牌谱列表无效。');
     if (records.length === 0) {
-      normalizeRules(rules, rules && Array.isArray(rules.uma) ? rules.uma.length : 4);
-      return { records: [], entries: [], totals: totals([]), warnings: [] };
+      const normalized = normalizeRules(rules, rules && Array.isArray(rules.uma) ? rules.uma.length : 4);
+      return { records: [], entries: [], totals: totals([], normalized), warnings: [] };
     }
     const seen = new Set();
     const calculated = records.map(record => {
@@ -200,12 +218,13 @@
       return calculate(record, rules);
     });
     const byId = new Map();
+    const fields = scoreFields(calculated[0].rules);
     const rankTotals = new Map();
     const centsById = new Map();
     calculated.forEach(result => result.entries.forEach(entry => {
       if (!byId.has(entry.playerId)) {
         byId.set(entry.playerId, { playerId: entry.playerId, name: entry.name, names: [], games: 0,
-          basePT: 0, umaPT: 0, chips: 0, chipPT: 0, totalPT: 0, money: 0, averageRank: 0, firsts: 0, lasts: 0 });
+          ...Object.fromEntries(fields.map(field => [field, 0])), averageRank: 0, firsts: 0, lasts: 0 });
         rankTotals.set(entry.playerId, 0);
         centsById.set(entry.playerId, 0);
       }
@@ -213,7 +232,7 @@
       row.name = entry.name;
       if (!row.names.includes(entry.name)) row.names.push(entry.name);
       row.games++;
-      FIELDS.filter(field => field !== 'money').forEach(field => { row[field] += entry[field]; });
+      fields.filter(field => field !== 'money').forEach(field => { row[field] += entry[field]; });
       const tiedCount = result.rules.tieMode === 'split' ? result.entries.filter(other => other.rank === entry.rank).length : 1;
       rankTotals.set(entry.playerId, rankTotals.get(entry.playerId) + entry.rank + (tiedCount - 1) / 2);
       centsById.set(entry.playerId, centsById.get(entry.playerId) + roundedCents(entry.money));
@@ -222,7 +241,7 @@
     }));
     const entries = [...byId.values()];
     entries.forEach(row => {
-      FIELDS.filter(field => field !== 'money').forEach(field => { row[field] = clean(row[field]); });
+      fields.filter(field => field !== 'money').forEach(field => { row[field] = clean(row[field]); });
       row.money = centsById.get(row.playerId) / 100;
       row.averageRank = clean(rankTotals.get(row.playerId) / row.games);
     });
@@ -233,7 +252,7 @@
       if (existing && existing !== entry.playerId) warnings.push('昵称“' + entry.name + '”对应不同玩家 ID，已分别统计。');
       else names.set(entry.name, entry.playerId);
     });
-    return { records: calculated, entries, totals: totals(entries), warnings };
+    return { records: calculated, entries, totals: totals(entries, calculated[0].rules), warnings };
   }
 
   return Object.freeze({ calculate, aggregateRecords, PaipuError });
