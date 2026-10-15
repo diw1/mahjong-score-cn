@@ -2,11 +2,11 @@
 
 // Each deployment scope owns only its Mahjong Score static caches.
 const CACHE_PREFIX = 'mahjong-score-cn-static:' + self.registration.scope + ':';
-const CACHE_NAME = CACHE_PREFIX + 'v1';
+const CACHE_NAME = CACHE_PREFIX + 'v2';
 const SCOPE_URL = new URL(self.registration.scope);
 const STATIC_FILES = [
   'index.html', 'app.js', 'app.css', 'engine.js', 'web-app.js',
-  'manifest.webmanifest', 'icon.svg'
+  'manifest.webmanifest', 'icon.svg', 'paipu.html', 'paipu.css', 'paipu.js', 'paipu-client.js', 'paipu-settlement.js', 'paipu-cloud.js'
 ];
 const STATIC_URLS = STATIC_FILES.map(path => new URL(path, SCOPE_URL).href);
 const STATIC_BY_PATH = new Map(STATIC_URLS.map(url => [new URL(url).pathname, url]));

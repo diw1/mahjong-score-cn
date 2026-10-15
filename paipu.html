@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#08613f">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="读取雀魂牌谱，核对一发、红宝与里宝祝仪，以及各家结算。解析结果保存在当前浏览器。">
+  <title>牌谱结算 · 麻将成绩</title>
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="stylesheet" href="paipu.css">
+  <script src="paipu-cloud.js" defer></script>
+  <script src="paipu-client.js" defer></script>
+  <script src="paipu-settlement.js" defer></script>
+  <script src="paipu.js" defer></script>
+  <script src="web-app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="header-back" href="index.html" aria-label="返回首页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 4-8 8 8 8"/></svg></a>
+    <h1>牌谱结算</h1>
+    <span class="header-spacer" aria-hidden="true"></span>
+  </header>
+  <main>
+    <div id="storage-warning" class="notice warning" role="alert" hidden>
+      <p id="storage-message"></p>
+      <div class="inline-actions">
+        <button id="warning-backup" type="button">导出当前结果备份</button>
+        <button id="export-original" type="button" hidden>导出原始存档</button>
+        <button id="warning-clear" type="button">清空牌谱存档</button>
+      </div>
+    </div>
+    <p id="module-error" class="notice error" role="alert" hidden></p>
+    <section class="input-panel" aria-label="读取牌谱与计算规则">
+      <p class="intro">粘贴雀魂牌谱链接，计算一发、红宝与里宝祝仪。</p>
+      <p class="local-note">解析结果仅保存在当前浏览器，可导出备份。读取新牌谱需连接你授权的私有后台，已保存的结果可离线重算。</p>
+      <p class="cloud-note"><a href="https://mahjong-paipu-kevin-9d6b.diwang39.chatgpt.site/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">管理私有后台 ↗</a><a id="cloud-continue" href="https://mahjong-paipu-kevin-9d6b.diwang39.chatgpt.site/paipu.html" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">打开云端牌谱页面继续 ↗</a><span>弹窗或登录连接不兼容时，可在云端私有页面使用同一套结算工具。</span></p>
+      <form id="paipu-form">
+        <fieldset id="input-fields">
+          <label class="input-label" for="paipu-urls">雀魂牌谱链接 <span>每行一个，可批量读取</span></label>
+          <textarea id="paipu-urls" name="urls" rows="3" placeholder="在这里粘贴牌谱链接" autocomplete="off" autocapitalize="none" spellcheck="false"></textarea>
+          <div class="rule-fields">
+            <label for="chip-pt">每祝价值（PT）<input id="chip-pt" name="chipPT" type="number" min="0" max="1000" step="0.1" value="3" required></label>
+            <label for="point-rate">折算倍率<input id="point-rate" name="pointRate" type="number" min="0" max="100000" step="0.01" value="10" required></label>
+            <label for="return-points">返还点数<input id="return-points" name="returnPoints" type="number" min="100" max="1000000" step="100" value="25000" required></label>
+          </div>
+          <div class="yakuman-settings">
+            <div class="yakuman-prices">
+              <label for="yakuman-ron">役满荣和 · 每份祝数<input id="yakuman-ron" name="yakumanRonChips" type="number" min="0" max="1000" step="1" value="10" required></label>
+              <label for="yakuman-tsumo">役满自摸 · 每家每份<input id="yakuman-tsumo" name="yakumanTsumoChips" type="number" min="0" max="1000" step="1" value="5" required></label>
+            </div>
+            <label class="yakuman-mode" for="yakuman-count">役满份数<select id="yakuman-count" name="doubleYakuman"><option value="count" selected>按牌谱倍数叠加 · 双倍计 2 份</option><option value="single">每次役满和牌只计 1 份</option></select></label>
+          </div>
+          <div class="preset-row" role="group" aria-label="顺位马预设">
+            <button id="preset-plain" class="preset" type="button" aria-pressed="false">纯素点对照 · 马 0</button>
+            <button id="preset-site" class="preset active" type="button" aria-pressed="true">本站四麻规则 · 15 / 5</button>
+          </div>
+          <details class="rule-details">
+            <summary>顺位马与祝仪规则</summary>
+            <div class="uma-fields" aria-label="顺位马">
+              <label>第 1 位<input name="uma0" type="number" min="-1000" max="1000" step="0.1" value="15" required></label>
+              <label>第 2 位<input name="uma1" type="number" min="-1000" max="1000" step="0.1" value="5" required></label>
+              <label>第 3 位<input name="uma2" type="number" min="-1000" max="1000" step="0.1" value="-5" required></label>
+              <label>第 4 位<input name="uma3" type="number" min="-1000" max="1000" step="0.1" value="-15" required></label>
+            </div>
+            <p>一发、红宝、里宝各计 1 祝；多个红宝或里宝按数量计算。自摸由其余各家支付，荣和由放铳者支付。</p>
+            <p>役满额外按份数计祝：默认荣和每份 10 祝，自摸由其余每家每份支付 5 祝；双倍或复合役满按牌谱倍数叠加，可修改上方设置。</p>
+            <p>旧解析结果若没有役满元信息，启用役满祝仪需重新读取完整牌谱，缺失信息不会当作 0。</p>
+            <p>素点 PT =（最终点数 − 返还点数）÷ 1,000。总 PT = 素点 PT + 顺位马 + 净祝数 × 每祝 PT；折算数 = 总 PT × 折算倍率。</p>
+            <p>默认返点 25,000、四麻顺位马 +15 / +5 / −5 / −15、每祝 3 PT、倍率 10。需要原工具 103 纯素点对照时选择“纯素点对照 · 马 0”。三麻请选择全 0 顺位马；“本站四麻规则”只用于四麻。</p>
+          </details>
+          <p id="rule-error" class="form-error" role="alert" hidden></p>
+          <div class="submit-row"><button class="primary-button" id="parse-button" type="submit">读取并计算牌谱</button></div>
+        </fieldset>
+      </form>
+      <button id="cancel-button" class="secondary-button cancel-button" type="button" hidden>取消剩余读取</button>
+      <p id="network-note" class="notice warning" hidden>当前已离线。可导入或重算已保存的解析结果；读取新牌谱需要联网。</p>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <ol id="jobs" class="job-list" aria-label="逐条读取进度" hidden></ol>
+    </section>
+    <section class="data-actions" aria-label="备份与导出">
+      <button id="import-backup" type="button">导入牌谱 JSON</button>
+      <button id="export-backup" type="button" disabled>导出 JSON 备份</button>
+      <button id="export-csv" type="button" disabled>导出 CSV</button>
+      <button id="clear-data" type="button">清空牌谱结果</button>
+      <input id="backup-file" type="file" accept="application/json,.json" hidden>
+    </section>
+    <div id="results"></div>
+    <noscript><p class="notice error">请启用 JavaScript 以读取、解码和计算牌谱。</p></noscript>
+  </main>
+  <nav class="bottom-nav" aria-label="页面">
+    <a href="index.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11 12 3l9 8M5 10v11h5v-7h4v7h5V10"/></svg>首页</a>
+    <a href="index.html#members"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg>成员</a>
+    <a href="paipu.html" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5zM9 7h6M9 12h6M9 17h4"/></svg>牌谱结算</a>
+  </nav>
+</body>
+</html>
