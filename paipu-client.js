@@ -8,6 +8,7 @@
   const MAX_BYTES = 24 * 1024 * 1024;
   const VERSION = 'web-0.11.252';
   const EN_GATEWAY = 'wss://engs.mahjongsoul.com/gateway';
+  const REPLAY_HOSTS = new Set(['mahjongsoul.game.yo-star.com', 'mahjongsoul.yo-star.com', 'game.maj-soul.com', 'game.maj-soul.net', 'game.mahjongsoul.com']);
   // Public converter mapping: honvl/Majsoul-to-NAGA, downloadlogsnaga.js YAKU_NAMES.
   const FAN_IDS = { ippatsu: 30, ura: 33, aka: 32 };
   const YAKUMAN_IDS = new Set([35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]);
@@ -341,11 +342,15 @@
     const copiedURL = sharedText.match(/https:\/\/[^\s<>"']+/u);
     try { url = new URL(copiedURL ? copiedURL[0] : sharedText); } catch (_) { fail('INVALID_LINK', '请输入完整的雀魂分享链接。'); }
     check(url.protocol === 'https:' && !url.port && !url.username && !url.password, '牌谱链接必须为不带账号信息的官方 HTTPS 地址。');
-    if (!['mahjongsoul.game.yo-star.com', 'mahjongsoul.yo-star.com'].includes(url.hostname)) fail('UNSUPPORTED_REGION', '当前在线读取原型只配置了官方国际服；可使用本地文件解析其他地区。');
+    if (!REPLAY_HOSTS.has(url.hostname)) fail('UNSUPPORTED_REGION', '无法识别此雀魂地址，请使用官方牌谱分享链接。');
     const share = url.searchParams.get('paipu') || '', pieces = share.split('_'), id = pieces[0];
     if (pieces[2] === '2') fail('UNSUPPORTED_LINK', '此牌谱分享 ID 需要额外转换，当前原型不支持。');
     if (!/^(?:\d{6}-)?[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(id)) fail('INVALID_LINK', '牌谱链接中的 ID 无效。');
-    return { id, url: url.href };
+    // Only the share value crosses regions. Never fetch or forward the source
+    // host/path, unrelated query parameters, or a fragment to the reader.
+    const canonical = new URL('https://mahjongsoul.game.yo-star.com/');
+    canonical.searchParams.set('paipu', share);
+    return { id, url: canonical.href };
   }
   async function fetchRecord(link, options = {}) {
     const meta = replayLink(link), signal = options.signal;

@@ -90,7 +90,48 @@ test('configured loader uses only link metadata and local decoding',async()=>{
   inspect(await Client.fetchRecord(link,{loader:async(meta,options)=>{called++;assert.equal(meta.id,'261014-00000000-0000-0000-0000-000000000000');assert.equal(typeof options.onProgress,'function');const data=structuredClone(fixture.actions.json);data.head.uuid=meta.id;return data;}}));
   assert.equal(called,1);
   await assert.rejects(Client.fetchRecord(link,{signal:AbortSignal.abort(),loader:async()=>fixture.old.json}),e=>e.code==='ABORTED');
-  await assert.rejects(Client.fetchRecord('https://game.maj-soul.com/1/?paipu=x'),e=>e.code==='UNSUPPORTED_REGION');
+  await assert.rejects(Client.fetchRecord('https://game.maj-soul.com/1/?paipu=x'),e=>e.code==='INVALID_LINK');
+});
+
+test('official region prefixes canonicalize to EN while preserving UUID and complete share suffix',async()=>{
+  const id='261015-AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE',share=id+'_a123456789_0';
+  for(const host of ['game.maj-soul.com','game.maj-soul.net','game.mahjongsoul.com','mahjongsoul.game.yo-star.com','mahjongsoul.yo-star.com']){
+    let calls=0;
+    const record=await Client.fetchRecord('https://'+host+'/1/?extra=discard&paipu='+encodeURIComponent(share)+'#discard',{
+      loader:async meta=>{
+        calls++;assert.deepEqual(meta,{id,url:'https://mahjongsoul.game.yo-star.com/?paipu='+share});
+        const data=structuredClone(fixture.old.json);data.head.uuid=id;return data;
+      }
+    });
+    assert.equal(calls,1);assert.equal(record.id,id);assert.equal(record.url,'https://mahjongsoul.game.yo-star.com/?paipu='+share);
+  }
+});
+
+test('copied regional share text retains its full paipu value and never uses the regional origin',async()=>{
+  const id='261015-11111111-2222-4333-8444-555555555555',share=id+'_a987654321';
+  const copied='雀魂牌譜：https://game.mahjongsoul.com/?paipu='+share+'\u00a0';
+  await Client.fetchRecord(copied,{loader:async meta=>{
+    assert.equal(meta.url,'https://mahjongsoul.game.yo-star.com/?paipu='+share);
+    const data=structuredClone(fixture.actions.json);data.head.uuid=id;return data;
+  }});
+});
+
+test('regional normalization does not relax HTTPS, exact host, credentials, port or ID boundaries',async()=>{
+  const id='261015-11111111-2222-4333-8444-555555555555';let calls=0;
+  const loader=async()=>{calls++;return fixture.old.json;};
+  for(const prefix of ['http://game.maj-soul.com/','https://game.maj-soul.com.evil.invalid/','https://evilgame.maj-soul.com/','https://game.mahjongsoul.com@evil.invalid/','https://private:secret@game.mahjongsoul.com/','https://game.maj-soul.net:8443/','https://unknown.invalid/'])
+    await assert.rejects(Client.fetchRecord(prefix+'?paipu='+id,{loader}),e=>['INVALID_RECORD','UNSUPPORTED_REGION'].includes(e.code));
+  await assert.rejects(Client.fetchRecord('https://game.maj-soul.com/1/?paipu=not-a-uuid',{loader}),e=>e.code==='INVALID_LINK');
+  assert.equal(calls,0);
+});
+
+test('cross-region rewriting preserves encoded-share refusal and record mismatch protection',async()=>{
+  const id='261015-11111111-2222-4333-8444-555555555555';let calls=0;
+  for(const host of ['game.maj-soul.com','game.maj-soul.net','game.mahjongsoul.com']){
+    await assert.rejects(Client.fetchRecord('https://'+host+'/?paipu='+id+'_a123_2',{loader:async()=>{calls++;return fixture.old.json;}}),e=>e.code==='UNSUPPORTED_LINK');
+    await assert.rejects(Client.fetchRecord('https://'+host+'/?paipu='+id+'_a123',{loader:async()=>fixture.old.json}),e=>e.code==='RECORD_MISMATCH');
+  }
+  assert.equal(calls,0);
 });
 test('anonymous bot IDs are scoped to each replay instead of merging across files',()=>{
   const first=structuredClone(fixture.old.json),second=structuredClone(fixture.old.json);

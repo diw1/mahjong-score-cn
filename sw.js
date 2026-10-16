@@ -2,7 +2,7 @@
 
 // Each deployment scope owns only its Mahjong Score static caches.
 const CACHE_PREFIX = 'mahjong-score-cn-static:' + self.registration.scope + ':';
-const CACHE_NAME = CACHE_PREFIX + 'v6';
+const CACHE_NAME = CACHE_PREFIX + 'v7';
 const SCOPE_URL = new URL(self.registration.scope);
 const STATIC_FILES = [
   'index.html', 'app.js', 'app.css', 'engine.js', 'web-app.js',
