@@ -12,7 +12,7 @@ const reply = (body, status = 200) => ({ ok: status < 400, status, json: async (
 const clean = value => JSON.parse(JSON.stringify(value));
 
 // Every request, popup and clock is mocked; these tests never contact an account or service.
-function boot({ enabled = false, origin = APP, fetchImpl, blocked = false } = {}) {
+function boot({ enabled, origin = APP, fetchImpl, blocked = false } = {}) {
   const calls = [], sent = [], listeners = new Map(), timers = new Map();
   let opened = 0, nextTimer = 0;
   const popup = { closed: false, postMessage(data, target) { sent.push({ data, target }); }, close() { this.closed = true; } };
@@ -31,7 +31,14 @@ function boot({ enabled = false, origin = APP, fetchImpl, blocked = false } = {}
       return fetchImpl ? fetchImpl(url, options) : url.endsWith('/status') ? reply({ enabled: true, connected: true }) : reply({ head: { uuid: 'synthetic' }, data: 'AAAA', ignoredPrivateField: 'discard' });
     },
   };
-  vm.runInNewContext(enabled ? source.replace('const PUBLIC_READ_ENABLED = false;', 'const PUBLIC_READ_ENABLED = true;') : source, context);
+  let script = source;
+  if (enabled !== undefined) {
+    assert.equal(typeof enabled, 'boolean');
+    const flag = /const\s+PUBLIC_READ_ENABLED\s*=\s*(?:true|false)\s*;/g;
+    assert.equal([...source.matchAll(flag)].length, 1, 'explicit branch mock must replace exactly one feature flag');
+    script = source.replace(flag, 'const PUBLIC_READ_ENABLED = ' + enabled + ';');
+  }
+  vm.runInNewContext(script, context);
   return {
     api: window.PaipuCloud, calls, sent, popup, timers,
     get opened() { return opened; }, get requests() { return calls.filter(item => item.url); },
@@ -40,8 +47,8 @@ function boot({ enabled = false, origin = APP, fetchImpl, blocked = false } = {}
   };
 }
 
-test('public switch stays disabled and private popup opens synchronously', async () => {
-  const app = boot(), controller = new AbortController();
+test('explicit private branch keeps its synchronous popup when public reading is disabled', async () => {
+  const app = boot({ enabled: false }), controller = new AbortController();
   assert.equal(app.api.publicReadEnabled, false);
   const connection = app.api.connect({ signal: controller.signal });
   assert.equal(app.opened, 1);
@@ -59,7 +66,7 @@ test('public switch stays disabled and private popup opens synchronously', async
 });
 
 test('private bridge rejects wrong origin, popup source and nonce', async () => {
-  const app = boot(), controller = new AbortController();
+  const app = boot({ enabled: false }), controller = new AbortController();
   const connection = app.api.connect({ signal: controller.signal });
   const state = app.sent[0].data.state;
   app.message({ version: 1, type: 'mahjong-paipu:ready', state }, 'https://untrusted.example');
@@ -72,7 +79,7 @@ test('private bridge rejects wrong origin, popup source and nonce', async () => 
 });
 
 test('private same-origin fallback keeps personal endpoint and credentials', async () => {
-  const app = boot({ origin: BACKEND });
+  const app = boot({ enabled: false, origin: BACKEND });
   const loader = await app.api.connect();
   await loader({ url: URL });
   assert.equal(app.opened, 0);
@@ -80,8 +87,9 @@ test('private same-origin fallback keeps personal endpoint and credentials', asy
   assert(app.requests.every(call => call.options.credentials === 'same-origin'));
 });
 
-test('public loader uses only fixed anonymous endpoints and returns only record fields', async () => {
-  const app = boot({ enabled: true });
+test('production defaults to public reading using only anonymous endpoints and record fields', async () => {
+  const app = boot();
+  assert.equal(app.api.publicReadEnabled, true);
   const loader = await app.api.connect(), progress = [];
   const raw = await loader({ url: URL }, { onProgress: text => progress.push(text) });
   assert.equal(app.opened, 0);

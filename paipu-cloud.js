@@ -2,7 +2,7 @@
   'use strict';
   const BACKEND_ORIGIN = 'https://mahjong-paipu-kevin-9d6b.diwang39.chatgpt.site';
   // Enable only after the owner authorizes a separate service account and enables the backend.
-  const PUBLIC_READ_ENABLED = false;
+  const PUBLIC_READ_ENABLED = true;
   const APP_ORIGINS = new Set(['https://diw1.github.io', 'http://127.0.0.1:8873']);
   const VERSION = 1;
   const PREFIX = 'mahjong-paipu:';

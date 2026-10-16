@@ -9,7 +9,7 @@
   <title>牌谱结算 · 麻将成绩</title>
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="stylesheet" href="paipu.css?v=3">
-  <script src="paipu-cloud.js?v=4" defer></script>
+  <script src="paipu-cloud.js?v=6" defer></script>
   <script src="paipu-client.js?v=5" defer></script>
   <script src="paipu-settlement.js?v=5" defer></script>
   <script src="paipu.js?v=5" defer></script>
@@ -33,8 +33,8 @@
     <p id="module-error" class="notice error" role="alert" hidden></p>
     <section class="input-panel" aria-label="读取牌谱与计算规则">
       <p class="intro">粘贴雀魂牌谱链接，计算一发、红宝与里宝祝仪。</p>
-      <p class="local-note">解析结果仅保存在当前浏览器，可导出备份。读取新牌谱需连接你授权的私有后台，已保存的结果可离线重算。</p>
-      <p class="cloud-note"><a href="https://mahjong-paipu-kevin-9d6b.diwang39.chatgpt.site/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">管理私有后台 ↗</a><a id="cloud-continue" href="https://mahjong-paipu-kevin-9d6b.diwang39.chatgpt.site/paipu.html" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">打开云端牌谱页面继续 ↗</a><span>弹窗或登录连接不兼容时，可在云端私有页面使用同一套结算工具。</span></p>
+      <p class="local-note">解析结果仅保存在当前浏览器，可导出备份。读取新牌谱通过公共云端专用账号完成，无需登录个人雀魂账号；已保存的结果可离线重算。</p>
+      <p class="cloud-note">读取时仅提交牌谱链接。若公共服务尚未就绪或繁忙，会逐条显示错误，未成功的牌谱不会计入结算。<a id="cloud-continue" hidden></a></p>
       <form id="paipu-form">
         <fieldset id="input-fields">
           <label class="input-label" for="paipu-urls">雀魂牌谱链接 <span>每行一个，可批量读取</span></label>
