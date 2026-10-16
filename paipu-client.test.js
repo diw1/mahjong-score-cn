@@ -182,6 +182,80 @@ function parseWin(hule){
     {name:'.lq.RecordHule',data:{scores:expectedPoints,hules:[{seat:0,zimo:true,...hule}]}}
   ]},{head:fixture.head}).rounds[0];
 }
+
+function parseMenzenWin({events=[],ming,seat=0,count=4}={}){
+  const head=structuredClone(fixture.head),scores=Array(count).fill(25000);
+  head.accounts=head.accounts.slice(0,count);
+  head.result.players=head.result.players.slice(0,count).map((p,i)=>({...p,part_point_1:scores[i]}));
+  return Client.parseRecord({records:[
+    {name:'.lq.RecordNewRound',data:{scores}},...events,
+    {name:'.lq.RecordHule',data:{scores,hules:[{seat,zimo:true,...(ming===undefined?{}:{ming}),fans:[{id:32,val:3}]}]}}
+  ]},{head}).rounds[0];
+}
+
+test('complete raw wins explicitly identify menzen without relying on ippatsu or riichi',()=>{
+  const record=Client.parseRecord(fixture.old.json);
+  assert.ok(record.rounds.every(r=>typeof r.menzen==='boolean'));
+  const closed=parseMenzenWin();assert.equal(closed.menzen,true);assert.equal(closed.ippatsu,false);
+  assert.equal(parseMenzenWin({ming:[]}).menzen,true);
+});
+
+test('chi pon open-kan and added-kan open only the actor hand',()=>{
+  for(const type of [0,1,2]){
+    const event={name:'.lq.RecordChiPengGang',data:{seat:0,type}};
+    assert.equal(parseMenzenWin({events:[event]}).menzen,false);
+    assert.equal(parseMenzenWin({events:[event],seat:1}).menzen,true);
+  }
+  for(const type of [2,5])assert.equal(parseMenzenWin({events:[{name:'.lq.RecordAnGangAddGang',data:{seat:0,type}}]}).menzen,false);
+});
+
+test('ankan remains closed and three-player north extraction does not open a hand',()=>{
+  const ankan={name:'.lq.RecordAnGangAddGang',data:{seat:0,type:3}};
+  assert.equal(parseMenzenWin({events:[ankan]}).menzen,true);
+  assert.equal(parseMenzenWin({events:[ankan],ming:['angang(0p,5p,5p,5p)']}).menzen,true);
+  const north={name:'.lq.RecordBaBei',data:{seat:0}};
+  assert.equal(parseMenzenWin({events:[north],count:3}).menzen,true);
+  assert.equal(parseMenzenWin({events:[north],ming:['babei(4z)'],count:3}).menzen,true);
+  assert.equal(parseMenzenWin({events:[north,north],ming:['babei(4z,4z)'],count:3}).menzen,true);
+});
+
+test('HuleInfo.ming named and compact strings distinguish concealed-kan from open melds',()=>{
+  for(const ming of [['angang(1m,1m,1m,1m)'],['5p'],['4z'],['angang(0s,5s,5s,5s)','babei(4z)']])assert.equal(parseMenzenWin({ming}).menzen,true);
+  for(const meld of ['shunzi(1m,2m,3m)','kezi(7z,7z,7z)','minggang(0p,5p,5p,5p)','1m|2m|3m','5p|0p|5p|5p','1s_2s_3s','7z_7z_7z'])
+    assert.equal(parseMenzenWin({ming:[meld]}).menzen,false);
+});
+
+test('unknown or contradictory menzen metadata is never converted into a closed hand',()=>{
+  for(const ming of [null,'angang(1m,1m,1m,1m)',[null],['mystery'],['angang(1m,1m,1m)'],['angang(1m,2m,3m,4m)'],['babei(1z)']])
+    assert.throws(()=>parseMenzenWin({ming}),e=>e.code==='MENZEN_METADATA_REQUIRED');
+  const unknown={name:'.lq.RecordAnGangAddGang',data:{seat:0,type:99}};
+  assert.throws(()=>parseMenzenWin({events:[unknown]}),e=>e.code==='MENZEN_METADATA_REQUIRED');
+  const open={name:'.lq.RecordChiPengGang',data:{seat:0,type:1}};
+  assert.throws(()=>parseMenzenWin({events:[open],ming:[]}),e=>e.code==='MENZEN_METADATA_REQUIRED');
+  assert.equal(parseMenzenWin({events:[open],ming:['unrecognized-but-already-open']}).menzen,false);
+});
+
+test('menzen state resets every round and remains separate for multiple winners',()=>{
+  const head=structuredClone(fixture.head),scores=[25000,25000,25000,25000];
+  head.result.players.forEach(p=>p.part_point_1=25000);
+  const opening=()=>({name:'.lq.RecordNewRound',data:{scores}});
+  const win=seat=>({seat,zimo:true,fans:[{id:32,val:1}]});
+  const record=Client.parseRecord({records:[opening(),{name:'.lq.RecordChiPengGang',data:{seat:0,type:1}},
+    {name:'.lq.RecordHule',data:{scores,hules:[win(0),win(1)]}},opening(),{name:'.lq.RecordHule',data:{scores,hules:[win(0)]}}
+  ]},{head});
+  assert.deepEqual(record.rounds.map(r=>r.menzen),[false,true,true]);
+});
+
+test('old normalized imports keep unknown menzen and reject nonboolean replacements',()=>{
+  const record=Client.parseRecord(fixture.old.json);record.rounds.forEach(r=>delete r.menzen);
+  assert.ok(Client.validateRecord(record).rounds.every(r=>!Object.hasOwn(r,'menzen')));
+  assert.ok(Client.parseRecord(JSON.stringify(record)).rounds.every(r=>!Object.hasOwn(r,'menzen')));
+  for(const value of [null,0,1,'true',{},[]]){
+    const bad=structuredClone(record);bad.rounds[0].menzen=value;
+    assert.throws(()=>Client.validateRecord(bad),e=>e.code==='INVALID_RECORD');
+  }
+  record.rounds[0].menzen=false;assert.equal(Client.validateRecord(record).rounds[0].menzen,false);
+});
 test('true yakuman IDs and fan values preserve single, double, and compound units',()=>{
   assert.equal(parseWin({yiman:true,count:1,fans:[{id:37,val:1}]}).yakumanUnits,1);
   for(const id of [47,48,49,50])assert.equal(parseWin({yiman:true,count:2,fans:[{id,val:2}]}).yakumanUnits,2);
@@ -234,13 +308,23 @@ test('binary total_point field 2 preserves signed thousandths and proto3 omitted
     assert.deepEqual(record.result.map(p=>p.points),expectedPoints);
   }
 });
-function winBinary(yiman,count,fans){
-  const hule=[...pv(5,1),...pv(10,yiman?1:0),...pv(11,count),...fans.flatMap(f=>pb(12,[...pv(2,f.val),...pv(3,f.id)]))];
+function winBinary(yiman,count,fans,ming=[],events=[]){
+  const hule=[...ming.flatMap(m=>pb(2,m)),...pv(5,1),...pv(10,yiman?1:0),...pv(11,count),...fans.flatMap(f=>pb(12,[...pv(2,f.val),...pv(3,f.id)]))];
   const newRound=pb(2,pb(5,[25000,25000,25000,25000].flatMap(vint)));
   const opening=[...pb(1,'.lq.RecordNewRound'),...newRound];
   const closing=[...pb(1,'.lq.RecordHule'),...pb(2,[...pb(1,hule),...pb(5,expectedPoints.flatMap(vint))])];
-  return Uint8Array.from([...pb(1,opening),...pb(1,closing)]);
+  const calls=events.flatMap(({name,seat,type})=>pb(1,[...pb(1,'.lq.'+name),...pb(2,[...pv(1,seat),...(type===undefined?[]:pv(2,type))])]));
+  return Uint8Array.from([...pb(1,opening),...calls,...pb(1,closing)]);
 }
+
+test('protobuf HuleInfo field 2 and call-event fields 1/2 preserve exact closed status',()=>{
+  const parse=(ming,events=[])=>Client.parseRecord(winBinary(false,1,[{id:32,val:1}],ming,events),{head:fixture.head}).rounds[0].menzen;
+  assert.equal(parse([]),true);
+  assert.equal(parse(['angang(1m,1m,1m,1m)'],[{name:'RecordAnGangAddGang',seat:0,type:3}]),true);
+  for(const type of [2,5])assert.equal(parse(['minggang(5p,0p,5p,5p)'],[{name:'RecordAnGangAddGang',seat:0,type}]),false);
+  for(const type of [0,1,2])assert.equal(parse(['kezi(1m,1m,1m)'],[{name:'RecordChiPengGang',seat:0,type}]),false);
+  assert.equal(parse(['babei(4z)'],[{name:'RecordBaBei',seat:0}]),true);
+});
 test('binary HuleInfo fields 10 and 11 distinguish true multipliers from kazoe han',()=>{
   for(const [flag,count,fans,want] of [
     [true,2,[{id:48,val:2}],2],

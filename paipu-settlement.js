@@ -156,6 +156,10 @@
       check(!from || from.id !== winner.id, '荣和放铳者不能是和牌者。');
       const aka = count(round.aka, '红宝牌数');
       const ura = count(round.ura, '里宝牌数');
+      check(round.menzen === undefined || typeof round.menzen === 'boolean', '门清标记须为布尔值。');
+      check(aka === 0 || round.menzen !== undefined, '含红宝牌的和牌缺少门清信息，请重新读取完整原始牌谱。', 'MENZEN_METADATA_REQUIRED');
+      const allStar = round.menzen === true && aka === 3;
+      const redChips = round.menzen === true ? allStar ? 5 : aka : 0;
       check(round.ippatsu === undefined || typeof round.ippatsu === 'boolean', '一发标记须为布尔值。');
       const chipsPerUnit = round.zimo ? rules.yakumanTsumoChips : rules.yakumanRonChips;
       const hasYakuman = round.yakumanUnits !== undefined;
@@ -166,20 +170,22 @@
       check(Number.isSafeInteger(yakuman), '役满祝数过大。');
       if (!hasYakuman) missingYakuman = true;
       if (yakumanUnits > 0 && chipsPerUnit === 0) disabledYakuman = true;
-      const counts = { aka, ura, ippatsu: round.ippatsu ? 1 : 0, yakuman };
+      const counts = { aka: redChips, ura, ippatsu: round.ippatsu ? 1 : 0, yakuman };
       const payers = round.zimo ? players.filter(player => player.id !== winner.id) : [from];
       const delta = new Map(players.map(player => [player.id, 0]));
-      const details = SOURCES.filter(source => counts[source.key] > 0 || source.key === 'yakuman' && yakumanUnits > 0).map(source => {
+      const details = SOURCES.filter(source => counts[source.key] > 0 || source.key === 'aka' && aka > 0 || source.key === 'yakuman' && yakumanUnits > 0).map(source => {
         const transfers = counts[source.key] > 0 ? payers.map(payer => ({ from: payer.id, to: winner.id, chips: counts[source.key] })) : [];
         transfers.forEach(transfer => {
           delta.set(transfer.from, delta.get(transfer.from) - transfer.chips);
           delta.set(transfer.to, delta.get(transfer.to) + transfer.chips);
         });
-        return { type: source.key, label: source.label, count: counts[source.key], transfers,
+        const label = source.key !== 'aka' ? source.label : allStar ? 'All Star（门清 3 张红 5）' : round.menzen === false ? '红宝牌（副露，' + aka + ' 张不计祝）' : '红宝牌（门清）';
+        return { type: source.key, label, count: counts[source.key], transfers,
+          ...(source.key === 'aka' ? { akaCount: aka, allStar, menzen: round.menzen } : {}),
           ...(source.key === 'yakuman' ? { yakumanUnits, chargedUnits, chipsPerUnit } : {}) };
       });
       delta.forEach((chips, playerId) => { entryById.get(playerId).chips += chips; });
-      const chipsPerPayer = aka + ura + counts.ippatsu + yakuman;
+      const chipsPerPayer = redChips + ura + counts.ippatsu + yakuman;
       return {
         id: round.id === undefined ? recordId + '-win-' + (index + 1) : String(round.id),
         label: typeof round.label === 'string' ? round.label : '和牌 ' + (index + 1),

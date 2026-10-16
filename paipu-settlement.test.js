@@ -12,9 +12,9 @@ function fixture() {
     url: 'https://mahjongsoul.game.yo-star.com/?paipu=260101-11111111-1111-4111-8111-111111111111_a12345678',
     players: names.map((name, seat) => ({ id: 'p' + seat, seat, name })), startPoints: 25000,
     rounds: [
-      { id: 'win1', label: '第1局赤1', winner: 2, from: 1, zimo: false, aka: 1, ura: 0, ippatsu: false, yakumanUnits: 0 },
+      { id: 'win1', label: '第1局赤1', winner: 2, from: 1, zimo: false, aka: 1, menzen: true, ura: 0, ippatsu: false, yakumanUnits: 0 },
       { id: 'win2', label: '一发', winner: 0, zimo: true, aka: 0, ura: 0, ippatsu: true, yakumanUnits: 0 },
-      { id: 'win3', label: '赤2', winner: 2, zimo: true, aka: 2, ura: 0, ippatsu: false, yakumanUnits: 0 }
+      { id: 'win3', label: '赤2', winner: 2, zimo: true, aka: 2, menzen: true, ura: 0, ippatsu: false, yakumanUnits: 0 }
     ],
     result: [25000, -1100, 63900, 12200].map((points, seat) => ({ seat, points }))
   };
@@ -24,6 +24,7 @@ test('103 reproduces the authorized reference result and its three payout rows',
   // mjget.fun /api/v4summary, mode103, authorized sample, retrieved 2026-10-15.
   // The normalized hand events/points here encode the public reference for unit testing;
   // IDs and names are synthetic. This arithmetic test does not assert end-to-end download success.
+  // Explicit menzen flags are synthetic rule inputs, not an inference about missing legacy metadata.
   const result = Settlement.calculate(fixture());
   assert.deepEqual(result.entries.map(row => row.basePT), [0, -26.1, 38.9, -12.8]);
   assert.deepEqual(result.entries.map(row => row.chips), [1, -4, 6, -3]);
@@ -36,7 +37,7 @@ test('103 reproduces the authorized reference result and its three payout rows',
 
 test('red, ura and ippatsu are independently auditable; tsumo charges every other player', () => {
   const record = fixture();
-  record.rounds = [{ id: 'bonus', winner: 'p1', zimo: true, aka: 2, ura: 3, ippatsu: true, closed: false, yakumanUnits: 0 }];
+  record.rounds = [{ id: 'bonus', winner: 'p1', zimo: true, aka: 2, menzen: true, ura: 3, ippatsu: true, yakumanUnits: 0 }];
   const result = Settlement.calculate(record);
   assert.deepEqual(result.entries.map(row => row.chips), [-6, 18, -6, -6]);
   assert.deepEqual(result.events[0].details.map(detail => [detail.type, detail.count]), [['aka', 2], ['ura', 3], ['ippatsu', 1]]);
@@ -46,7 +47,7 @@ test('red, ura and ippatsu are independently auditable; tsumo charges every othe
 
 test('ron charges only the discarder and double ron pays both winners separately', () => {
   const record = fixture();
-  record.rounds = [{ id: 'same-round', winner: 0, from: 3, zimo: false, aka: 1, ura: 2, ippatsu: true, yakumanUnits: 0 },
+  record.rounds = [{ id: 'same-round', winner: 0, from: 3, zimo: false, aka: 1, menzen: true, ura: 2, ippatsu: true, yakumanUnits: 0 },
     { id: 'same-round', winner: 1, from: 3, zimo: false, aka: 0, ura: 1, ippatsu: false, yakumanUnits: 0 }];
   const result = Settlement.calculate(record);
   assert.deepEqual(result.entries.map(row => row.chips), [4, 1, 0, -5]);
@@ -54,13 +55,17 @@ test('ron charges only the discarder and double ron pays both winners separately
   assert.equal(result.events[0].transfers.length, 1);
 });
 
-test('legacy yakuman labels never substitute for verified units or restrict open hands', () => {
+test('legacy yakuman and closed labels never replace explicit yakuman units or menzen metadata', () => {
   const record = fixture();
   record.rounds = [{ winner: 0, from: 1, zimo: false, aka: 0, ura: 0, ippatsu: false, yakuman: 3, yakumanUnits: 0 }];
   assert.deepEqual(Settlement.calculate(record).entries.map(row => row.chips), [0, 0, 0, 0]);
   record.rounds[0].aka = 2;
   record.rounds[0].closed = false;
+  assert.throws(() => Settlement.calculate(record), error => error.code === 'MENZEN_METADATA_REQUIRED');
+  record.rounds[0].menzen = true;
   assert.deepEqual(Settlement.calculate(record).entries.map(row => row.chips), [2, -2, 0, 0]);
+  record.rounds[0].menzen = false;
+  assert.deepEqual(Settlement.calculate(record).entries.map(row => row.chips), [0, 0, 0, 0]);
 });
 
 test('confirmed default yakuman payments are ten for ron and five from each tsumo payer', () => {
@@ -90,7 +95,7 @@ test('double and compound yakuman stack official units while single mode caps ea
 
 test('yakuman adds to red, ura and ippatsu as a separate auditable source', () => {
   const record = fixture();
-  record.rounds = [{ winner: 1, from: 3, zimo: false, aka: 2, ura: 3, ippatsu: true, yakumanUnits: 2 }];
+  record.rounds = [{ winner: 1, from: 3, zimo: false, aka: 2, menzen: true, ura: 3, ippatsu: true, yakumanUnits: 2 }];
   const result = Settlement.calculate(record);
   assert.deepEqual(result.entries.map(row => row.chips), [0, 26, 0, -26]);
   assert.deepEqual(result.events[0].details.map(detail => [detail.type, detail.count]), [['aka', 2], ['ura', 3], ['ippatsu', 1], ['yakuman', 20]]);
@@ -113,7 +118,7 @@ test('three-player yakuman tsumo charges only two actual opponents per unit', ()
 });
 
 test('missing yakuman metadata is explicit, and a deliberate zero price never silently invents it', () => {
-  const record = fixture(); record.rounds = [{ winner: 0, from: 1, zimo: false, aka: 1 }];
+  const record = fixture(); record.rounds = [{ winner: 0, from: 1, zimo: false, aka: 1, menzen: true }];
   assert.throws(() => Settlement.calculate(record), error => error.code === 'YAKUMAN_METADATA_REQUIRED');
   const disabled = Settlement.calculate(record, { yakumanRonChips: 0, yakumanTsumoChips: 0 });
   assert.deepEqual(disabled.entries.map(row => row.chips), [1, -1, 0, 0]);
@@ -174,7 +179,7 @@ test('a pure-points profile aggregates three- and four-player records without in
   const three = fixture(); three.id = 'three-player';
   three.players = three.players.slice(0, 3);
   three.result = [35000, 25000, 15000].map((points, seat) => ({ seat, points }));
-  three.rounds = [{ winner: 0, zimo: true, aka: 1, yakumanUnits: 0 }];
+  three.rounds = [{ winner: 0, zimo: true, aka: 1, menzen: true, yakumanUnits: 0 }];
   const result = Settlement.aggregateRecords([four, three], { uma: [0, 0, 0, 0] });
   assert.equal(result.records[0].rules.uma.length, 4);
   assert.equal(result.records[1].rules.uma.length, 3);
@@ -334,7 +339,7 @@ test('official mode aggregates mixed sanma and yonma by stable ID without invent
 
 test('official PT never suppresses missing yakuman metadata or alters ron source charges', () => {
   const record = officialFixture();
-  record.rounds = [{ winner: 1, from: 3, zimo: false, aka: 2, ura: 3, ippatsu: true, yakumanUnits: 2 }];
+  record.rounds = [{ winner: 1, from: 3, zimo: false, aka: 2, menzen: true, ura: 3, ippatsu: true, yakumanUnits: 2 }];
   const result = Settlement.calculate(record, { scoreMode: 'official' });
   assert.deepEqual(result.entries.map(row => row.chips), [0, 26, 0, -26]);
   assert.deepEqual(result.events[0].details.map(row => [row.type, row.count]), [['aka', 2], ['ura', 3], ['ippatsu', 1], ['yakuman', 20]]);
@@ -353,4 +358,86 @@ test('official empty totals and nonzero source totals retain their own shape and
   assert.deepEqual(aggregate.entries.map(row => row.money), result.entries.map(row => row.money * 2));
   const custom = Settlement.calculate(record, { scoreMode: 'custom', uma: [15, 5, -5, -15] });
   assert.ok(custom.entries.every(row => Object.hasOwn(row, 'basePT') && Object.hasOwn(row, 'umaPT') && !Object.hasOwn(row, 'mahjongPT')));
+});
+
+test('zero through four red tiles require menzen, and exactly three replace the red award with five', () => {
+  for (const scoreMode of ['custom', 'official']) for (const menzen of [false, true]) for (let aka = 0; aka <= 4; aka++) {
+    const record = officialFixture();
+    record.rounds = [{ winner: 0, from: 1, zimo: false, aka, menzen, ura: 0, ippatsu: false, yakumanUnits: 0 }];
+    const before = structuredClone(record), result = Settlement.calculate(record, { scoreMode });
+    const award = menzen ? aka === 3 ? 5 : aka : 0;
+    assert.deepEqual(result.entries.map(row => row.chips), [award, award ? -award : 0, 0, 0]);
+    assert.equal(result.events[0].chipsPerPayer, award);
+    const red = result.events[0].details.find(detail => detail.type === 'aka');
+    if (aka === 0) assert.equal(red, undefined);
+    else {
+      assert.equal(red.akaCount, aka); assert.equal(red.count, award);
+      assert.equal(red.menzen, menzen); assert.equal(red.allStar, menzen && aka === 3);
+      assert.equal(red.transfers.length, menzen ? 1 : 0);
+      assert.equal(red.label, !menzen ? '红宝牌（副露，' + aka + ' 张不计祝）' : aka === 3 ? 'All Star（门清 3 张红 5）' : '红宝牌（门清）');
+    }
+    if (scoreMode === 'official') assert.equal(result.entries[0].mahjongPT, record.result[0].officialPT);
+    assert.deepEqual(record, before);
+  }
+});
+
+test('All Star ron and tsumo preserve payer rules for both three and four players in each score mode', () => {
+  for (const scoreMode of ['custom', 'official']) for (const playerCount of [3, 4]) for (const zimo of [false, true]) {
+    const record = officialFixture(); record.players = record.players.slice(0, playerCount);
+    record.startPoints = playerCount === 3 ? 35000 : 25000;
+    record.result = record.players.map((player, seat) => ({ seat, points: record.startPoints, officialPT: 0 }));
+    record.rounds = [{ winner: 0, from: zimo ? null : playerCount - 1, zimo, aka: 3, menzen: true, yakumanUnits: 0 }];
+    const result = Settlement.calculate(record, { scoreMode, returnPoints: record.startPoints });
+    const expected = Array(playerCount).fill(0);
+    expected[0] = zimo ? 5 * (playerCount - 1) : 5;
+    if (zimo) for (let seat = 1; seat < playerCount; seat++) expected[seat] = -5;
+    else expected[playerCount - 1] = -5;
+    assert.deepEqual(result.entries.map(row => row.chips), expected);
+    assert.deepEqual(result.entries.map(row => row.chipPT), expected.map(value => value * 3));
+    assert.equal(result.events[0].transfers.length, zimo ? playerCount - 1 : 1);
+    assert.equal(result.events[0].details[0].akaCount, 3);
+    assert.equal(result.events[0].details[0].count, 5);
+    near(result.totals.chips, 0); near(result.totals.money, 0);
+  }
+});
+
+test('legacy menzen metadata is unknown only when needed, and never inferred from closed or riichi labels', () => {
+  for (const scoreMode of ['custom', 'official']) {
+    const record = officialFixture();
+    record.rounds = [{ winner: 0, from: 1, zimo: false, aka: 1, closed: true, riichi: true, yakumanUnits: 0 }];
+    assert.throws(() => Settlement.calculate(record, { scoreMode }), error => error.code === 'MENZEN_METADATA_REQUIRED');
+    record.rounds[0].aka = 3;
+    assert.throws(() => Settlement.calculate(record, { scoreMode }), error => error.code === 'MENZEN_METADATA_REQUIRED');
+    record.rounds[0].aka = 0; record.rounds[0].ura = 2; record.rounds[0].ippatsu = true; record.rounds[0].yakumanUnits = 1;
+    const result = Settlement.calculate(record, { scoreMode });
+    assert.deepEqual(result.entries.map(row => row.chips), [13, -13, 0, 0]);
+    assert.equal(result.events[0].details.some(detail => detail.type === 'aka'), false);
+    delete record.rounds[0].yakumanUnits;
+    assert.throws(() => Settlement.calculate(record, { scoreMode }), error => error.code === 'YAKUMAN_METADATA_REQUIRED');
+    record.rounds[0].yakumanUnits = 0;
+    for (const menzen of [null, 'true', 1, {}, []]) {
+      record.rounds[0].menzen = menzen;
+      assert.throws(() => Settlement.calculate(record, { scoreMode }), error => error.code === 'INVALID_RECORD' && /门清/.test(error.message));
+    }
+  }
+});
+
+test('All Star replaces only the red portion while ura, ippatsu and compound yakuman remain additive', () => {
+  for (const scoreMode of ['custom', 'official']) for (const menzen of [false, true]) for (const zimo of [false, true]) {
+    const record = officialFixture();
+    record.rounds = [{ winner: 0, from: zimo ? null : 1, zimo, aka: 3, menzen, ura: 2, ippatsu: true, yakumanUnits: 2 }];
+    const result = Settlement.calculate(record, { scoreMode });
+    const perPayer = (menzen ? 5 : 0) + 2 + 1 + (zimo ? 10 : 20);
+    assert.deepEqual(result.entries.map(row => row.chips), zimo ? [3 * perPayer, -perPayer, -perPayer, -perPayer] : [perPayer, -perPayer, 0, 0]);
+    assert.deepEqual(result.events[0].details.map(detail => [detail.type, detail.count]), [['aka', menzen ? 5 : 0], ['ura', 2], ['ippatsu', 1], ['yakuman', zimo ? 10 : 20]]);
+    assert.equal(result.events[0].details[0].akaCount, 3);
+    assert.equal(result.events[0].details[0].allStar, menzen);
+    assert.equal(result.events[0].details[0].transfers.length, menzen ? zimo ? 3 : 1 : 0);
+  }
+  const first = officialFixture(), second = officialFixture(); second.id = 'synthetic-open-red';
+  first.rounds = [{ winner: 0, from: 1, zimo: false, aka: 3, menzen: true, yakumanUnits: 0 }];
+  second.rounds = [{ winner: 0, from: 1, zimo: false, aka: 3, menzen: false, yakumanUnits: 0 }];
+  const result = Settlement.aggregateRecords([first, second], { scoreMode: 'official' });
+  assert.deepEqual(result.entries.map(row => row.chips), [5, -5, 0, 0]);
+  near(result.totals.chipPT, 0); near(result.totals.money, 0);
 });

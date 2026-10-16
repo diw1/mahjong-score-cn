@@ -41,10 +41,12 @@
     const activeRules = validateRules(rules);
     try { return modules().settlement.calculate(record, activeRules); }
     catch (error) {
-      if (!allowMissingMetadata || !['YAKUMAN_METADATA_REQUIRED', 'MISSING_OFFICIAL_PT'].includes(error.code)) throw error;
+      if (!allowMissingMetadata || !['YAKUMAN_METADATA_REQUIRED', 'MISSING_OFFICIAL_PT', 'MENZEN_METADATA_REQUIRED'].includes(error.code)) throw error;
       // Validate the known event data without making up official scores or yakuman metadata.
       // This legacy-mode validation result is discarded, never displayed or stored.
-      modules().settlement.calculate(record, { ...activeRules, scoreMode: 'custom', returnPoints: record.startPoints, uma: Array(record.players.length).fill(0), yakumanRonChips: 0, yakumanTsumoChips: 0 });
+      const known = { ...record, rounds: record.rounds.map((round) => round.aka > 0 && round.menzen === undefined ? { ...round, aka: 0 } : round) };
+      // Unknown red-chip eligibility is omitted only in this discarded validation copy.
+      modules().settlement.calculate(known, { ...activeRules, scoreMode: 'custom', returnPoints: record.startPoints, uma: Array(record.players.length).fill(0), yakumanRonChips: 0, yakumanTsumoChips: 0 });
       return null;
     }
   }
@@ -60,7 +62,7 @@
     return modules().settlement.aggregateRecords(records, activeRules);
   }
   function needsMetadata(record) {
-    return record.result.some((entry) => entry.officialPT === undefined) || record.rounds.some((round) => round.yakumanUnits === undefined);
+    return record.result.some((entry) => entry.officialPT === undefined) || record.rounds.some((round) => round.yakumanUnits === undefined || round.aka > 0 && round.menzen === undefined);
   }
   function validatedRecord(raw) {
     const checked = modules().client.validateRecord(clone(raw));
@@ -148,7 +150,11 @@
     const names = new Map(record.players.map((player) => [player.id, player.name]));
     const name = (id) => names.get(id) || '未知成员';
     if (!result.events.length) return '<p class="no-events">这份牌谱没有可显示的和牌事件。</p>';
-    const trigger = (detail) => detail.type === 'yakuman' ? '<li class="yakuman-trigger">役满 ' + (detail.chargedUnits == null ? '份数未提供' : format(detail.chargedUnits, 0) + ' 份') + ' × 每份 ' + (detail.chipsPerUnit == null ? '单价未提供' : format(detail.chipsPerUnit, 0) + ' 祝') + ' = 每名付款者 ' + format(detail.count, 0) + ' 祝' + (detail.yakumanUnits == null ? '' : '（牌谱 ' + format(detail.yakumanUnits, 0) + ' 倍）') + '</li>' : '<li>' + escapeHTML(detail.label) + ' × ' + format(detail.count, 0) + '</li>';
+    const trigger = (detail) => {
+      if (detail.type === 'aka' && detail.allStar) return '<li>All Star：门清 3 张红 5 → 每名付款者 ' + format(detail.count, 0) + ' 祝（替代普通红牌的 3 祝）</li>';
+      if (detail.type === 'aka' && detail.menzen === false) return '<li>副露后红 5 不计祝（' + format(detail.akaCount, 0) + ' 张红 5）</li>';
+      return detail.type === 'yakuman' ? '<li class="yakuman-trigger">役满 ' + (detail.chargedUnits == null ? '份数未提供' : format(detail.chargedUnits, 0) + ' 份') + ' × 每份 ' + (detail.chipsPerUnit == null ? '单价未提供' : format(detail.chipsPerUnit, 0) + ' 祝') + ' = 每名付款者 ' + format(detail.count, 0) + ' 祝' + (detail.yakumanUnits == null ? '' : '（牌谱 ' + format(detail.yakumanUnits, 0) + ' 倍）') + '</li>' : '<li>' + escapeHTML(detail.label) + ' × ' + format(detail.count, 0) + '</li>';
+    };
     return result.events.map((event) => '<details class="round-detail"><summary>' + escapeHTML(event.label || '和牌') + ' · ' + escapeHTML(name(event.winner)) + ' ' + (event.zimo ? '自摸' : '荣和') + '<span>' + (event.chipsPerPayer ? '每名付款者 ' + format(event.chipsPerPayer, 0) + ' 祝' : '无祝仪') + '</span></summary>' + (event.details.length ? '<ul class="trigger-list">' + event.details.map(trigger).join('') + '</ul>' : '<p>本次和牌没有按当前规则计入的祝仪。</p>') + (event.transfers.length ? '<ul class="payment-list">' + event.transfers.map((transfer) => '<li><span>' + escapeHTML(name(transfer.from)) + ' → ' + escapeHTML(name(transfer.to)) + '</span><b>' + format(transfer.chips, 0) + ' 祝 · ' + format(transfer.chips * store.rules.chipPT) + ' PT</b></li>').join('') + '</ul>' : '') + '</details>').join('');
   }
   function renderResults() {
@@ -169,9 +175,9 @@
       $('results').innerHTML = html + '</section>';
     } catch (e) {
       aggregate = null; $('export-csv').disabled = true;
-      const missing = ['YAKUMAN_METADATA_REQUIRED', 'MISSING_OFFICIAL_PT'].includes(e.code);
+      const missing = ['YAKUMAN_METADATA_REQUIRED', 'MISSING_OFFICIAL_PT', 'MENZEN_METADATA_REQUIRED'].includes(e.code);
       const refreshable = missing && store.records.some((record) => needsMetadata(record) && safeURL(record.url));
-      $('results').innerHTML = '<div class="notice error" role="alert"><p>' + (missing ? '已保留 ' + store.records.length + ' 份牌谱。旧解析缺少官方结算分或役满信息，暂不能结算。重新读取同一链接或导入完整原始牌谱即可补齐，不会重复累计；缺失信息不会当作 0。' : '结算失败：' + escapeHTML(e.message || '请检查规则与解析结果') + '。已保存的牌谱仍保留，可先导出 JSON 备份。') + '</p>' + (refreshable ? '<button type="button" data-refresh-missing' + (busy ? ' disabled' : '') + '>补齐旧牌谱信息</button>' : '') + '</div>';
+      $('results').innerHTML = '<div class="notice error" role="alert"><p>' + (missing ? '已保留 ' + store.records.length + ' 份牌谱。旧解析缺少官方结算分、役满或门清信息，暂不能结算。重新读取同一链接或导入完整原始牌谱即可补齐，不会重复累计；缺失信息不会当作 0。' : '结算失败：' + escapeHTML(e.message || '请检查规则与解析结果') + '。已保存的牌谱仍保留，可先导出 JSON 备份。') + '</p>' + (refreshable ? '<button type="button" data-refresh-missing' + (busy ? ' disabled' : '') + '>补齐旧牌谱信息</button>' : '') + '</div>';
     }
   }
   async function parse(event) {
@@ -280,7 +286,7 @@
         calculateRecord(record, store.rules, true);
         const existing = store.records.findIndex((item) => recordKey(item.id) === recordKey(record.id));
         const refresh = existing >= 0 && needsMetadata(store.records[existing]) && !needsMetadata(record);
-        if (existing >= 0 && !refresh) { status('该牌谱 ID 已存在，未重复加入或累计。补齐旧记录需要包含官方结算分及役满信息的完整牌谱。'); return; }
+        if (existing >= 0 && !refresh) { status('该牌谱 ID 已存在，未重复加入或累计。补齐旧记录需要包含官方结算分、役满及红牌门清信息的完整牌谱。'); return; }
         if (!window.confirm((refresh ? '用完整解析补齐这份旧牌谱信息？不会重复累计。' : '将这份 ' + record.players.length + ' 人牌谱加入当前结果，并按当前规则计算？') + (readFailed ? '原存档自动保存已暂停，本次只加入内存结果；请导出备份后再恢复保存。' : '现有结果会保留。'))) { status('已取消导入，当前结果保留。'); return; }
         if (refresh) store.records[existing] = record;
         else store.records.push(record);

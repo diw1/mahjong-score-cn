@@ -10,9 +10,9 @@
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="stylesheet" href="paipu.css?v=3">
   <script src="paipu-cloud.js?v=6" defer></script>
-  <script src="paipu-client.js?v=7" defer></script>
-  <script src="paipu-settlement.js?v=5" defer></script>
-  <script src="paipu.js?v=5" defer></script>
+  <script src="paipu-client.js?v=8" defer></script>
+  <script src="paipu-settlement.js?v=8" defer></script>
+  <script src="paipu.js?v=8" defer></script>
   <script src="web-app.js" defer></script>
 </head>
 <body>
@@ -46,9 +46,10 @@
           <details class="rule-details">
             <summary>固定结算规则</summary>
             <p>麻将 PT 直接采用雀魂牌谱的最终结算分，已包含素点与顺位马，按该牌谱的规则计算。</p>
-            <p>一发、红宝、里宝各计 1 祝；多个红宝或里宝按数量计算。自摸由其余各家支付，荣和由放铳者支付。</p>
+            <p>一发计 1 祝，里宝按实际张数计祝。红 5 仅在门清和牌时每张计 1 祝；门清 3 张红 5 为 All Star，红牌部分合计 5 祝，替代普通的 3 祝。自摸由其余各家支付，荣和由放铳者支付。</p>
+            <p>吃、碰、明杠或加杠后不计红牌祝仪；暗杠与三麻拔北保留门清。</p>
             <p>役满荣和每份 10 祝，自摸由其余每家每份支付 5 祝；双倍或复合役满按牌谱倍数叠加。</p>
-            <p>旧解析结果若缺少官方结算分或役满信息，会保留记录。重新读取同一牌谱可补齐信息，不会重复累计。</p>
+            <p>旧解析结果若缺少官方结算分、役满或红牌门清信息，会保留记录。重新读取同一牌谱可补齐信息，不会重复累计。</p>
             <p>总 PT = 麻将 PT + 净祝数 × 每祝 PT；折算数 = 总 PT × 折算倍率。</p>
           </details>
           <p id="rule-error" class="form-error" role="alert" hidden></p>

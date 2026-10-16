@@ -125,11 +125,12 @@
     const m = message(event.data || new Uint8Array());
     const name = event.name.split('.').pop();
     if (name === 'RecordNewRound') return { chang: uint(m, 1), ju: uint(m, 2), ben: uint(m, 3), scores: ints(m, 5) };
-    if (name === 'RecordDiscardTile' || name === 'RecordAnGangAddGang') return { seat: uint(m, 1) };
+    if (name === 'RecordDiscardTile' || name === 'RecordBaBei') return { seat: uint(m, 1) };
+    if (name === 'RecordChiPengGang' || name === 'RecordAnGangAddGang') return { seat: uint(m, 1), type: uint(m, 2) };
     if (name === 'RecordNoTile') return { scores: nested(m, 3, item => ({ old_scores: ints(item, 2), delta_scores: ints(item, 3) })), hules_history: nested(m, 9, () => ({})) };
     if (name === 'RecordLiuJu') return { gameend: raw(m, 2) ? { scores: ints(message(raw(m, 2)), 1) } : null, hules_history: nested(m, 9, () => ({})) };
     if (name === 'RecordHule') return { scores: ints(m, 5), old_scores: ints(m, 2), delta_scores: ints(m, 3), gameend: raw(m, 6) ? { scores: ints(message(raw(m, 6)), 1) } : null, hules: nested(m, 1, h => ({
-      seat: uint(h, 4), zimo: !!uint(h, 5), yiman: !!uint(h, 10), count: uint(h, 11), hand: all(h, 1).map(x => text(x.value)),
+      seat: uint(h, 4), zimo: !!uint(h, 5), yiman: !!uint(h, 10), count: uint(h, 11), hand: all(h, 1).map(x => text(x.value)), ming: all(h, 2).map(x => text(x.value)),
       fans: nested(h, 12, f => ({ name: string(f, 1), val: uint(f, 2), id: uint(f, 3) }))
     })) };
     return {};
@@ -170,6 +171,43 @@
     if (identifiedUnits > 0 && (hule.yiman !== true || identified.length === fans.length)) return identifiedUnits;
     fail('YAKUMAN_METADATA_REQUIRED', '无法核实此和牌的役满倍数，请重新读取原始牌谱。');
   }
+  function meldMenzen(meld) {
+    if (typeof meld !== 'string' || !meld.length || meld.length > 200) return undefined;
+    const tile = /^(?:[0-9][mps]|[1-7]z)t?$/;
+    const normalizedTile = value => value.replace(/^0/, '5').replace(/t$/, '');
+    // Official HuleInfo.ming supports named forms and the older compact form:
+    // a single tile denotes an ankan; 3/4 tiles joined by | denote an open meld.
+    // Also recognize tile-only _-separated open melds in JSON imports.
+    const named = /^(shunzi|kezi|minggang|angang|babei)\(([^()]*)\)$/.exec(meld);
+    if (named) {
+      const kind = named[1], tiles = named[2].split(',');
+      if (!tiles.every(value => tile.test(value))) return undefined;
+      if (kind === 'babei') return tiles.length >= 1 && tiles.length <= 4 && tiles.every(value => normalizedTile(value) === '4z') ? true : undefined;
+      if (kind === 'angang') return tiles.length === 4 && tiles.every(value => normalizedTile(value) === normalizedTile(tiles[0])) ? true : undefined;
+      return tiles.length === (kind === 'minggang' ? 4 : 3) ? false : undefined;
+    }
+    if (tile.test(meld)) return true;
+    const tiles = meld.split(/[|_]/);
+    if ([3, 4].includes(tiles.length) && tiles.every(value => tile.test(value))) return false;
+    return undefined;
+  }
+  function winMenzen(hule, tracked) {
+    if (hule.ming === undefined) {
+      if (typeof tracked === 'boolean') return tracked;
+      fail('MENZEN_METADATA_REQUIRED', '无法核实此和牌的门清状态，请重新读取完整原始牌谱。');
+    }
+    if (!Array.isArray(hule.ming) || hule.ming.length > 8) fail('MENZEN_METADATA_REQUIRED', '副露信息不完整，请重新读取完整原始牌谱。');
+    const melds = hule.ming.map(meldMenzen);
+    // An already observed open call proves non-menzen even if another compact
+    // meld is unfamiliar. Never turn an unknown string into a closed hand.
+    if (melds.includes(undefined)) {
+      if (tracked === false) return false;
+      fail('MENZEN_METADATA_REQUIRED', '无法识别此和牌的副露格式，请重新读取完整原始牌谱。');
+    }
+    const snapshot = melds.every(Boolean);
+    if (tracked === false && snapshot) fail('MENZEN_METADATA_REQUIRED', '和牌副露与对局事件不一致，无法核实门清状态。');
+    return snapshot;
+  }
   function normalize(sourceHead, events, metadata) {
     const h = sourceHead || metadata.head || {};
     const accounts = h.accounts || metadata.players || [];
@@ -180,19 +218,31 @@
       check(p.id !== undefined || accountId || recordId, '缺少可区分匿名玩家的牌谱 ID。');
       return { id: String(p.id !== undefined ? p.id : accountId ? accountId : recordId + ':seat-' + seat), seat, name: p.name || p.nickname || '玩家' + (seat + 1) };
     });
-    const rounds = []; let lastSource = null, currentLabel = '', firstScores = null, roundOpen = false, terminals = 0, terminalScores = null;
+    const rounds = []; let lastSource = null, currentLabel = '', firstScores = null, roundOpen = false, terminals = 0, terminalScores = null, menzenStates = null;
     events.forEach((event, index) => {
       const name = event.name.split('.').pop(), d = eventData(event);
       if (name.startsWith('RecordHule') && name !== 'RecordHule') fail('UNSUPPORTED_MODE', '当前只支持普通日麻牌谱，不支持此特殊和牌模式。');
       if (name === 'RecordNewRound') {
         if (roundOpen) fail('TRUNCATED_RECORD', '原始牌谱缺少上一局的终局事件，不能计算祝仪。');
         check(Array.isArray(d.scores) && d.scores.length === players.length, '开局点数不完整。');
-        roundOpen = true; terminalScores = null;
+        roundOpen = true; terminalScores = null; menzenStates = players.map(() => true);
         currentLabel = ['东', '南', '西', '北'][d.chang || 0] + ((d.ju || 0) + 1) + '局 ' + (d.ben || 0) + '本场';
         if (!firstScores && d.scores?.length) firstScores = d.scores;
         lastSource = null;
       }
-      if (name === 'RecordDiscardTile' || name === 'RecordAnGangAddGang') lastSource = Number(d.seat || 0);
+      if (name === 'RecordChiPengGang' || name === 'RecordAnGangAddGang' || name === 'RecordBaBei') {
+        check(roundOpen, '副露事件缺少对应的开局。');
+        const seat = d.seat === undefined ? 0 : d.seat;
+        check(Number.isInteger(seat) && seat >= 0 && seat < players.length, '副露事件座位无效。');
+        if (name === 'RecordChiPengGang') menzenStates[seat] = false;
+        else if (name === 'RecordAnGangAddGang') {
+          // Official E_Ming: 3=ankan, 2=open kan (also older added-kan
+          // records), 5=added kan. A missing/unknown type cannot imply closed.
+          if (d.type === 2 || d.type === 5) menzenStates[seat] = false;
+          else if (d.type !== 3 && menzenStates[seat] !== false) menzenStates[seat] = undefined;
+        }
+      }
+      if (name === 'RecordDiscardTile' || name === 'RecordAnGangAddGang' || name === 'RecordBaBei') lastSource = Number(d.seat || 0);
       if (name === 'RecordHule') {
         check(roundOpen, '和牌事件缺少对应的开局。');
         check(Array.isArray(d.hules) && d.hules.length > 0, '和牌事件没有和牌者。');
@@ -201,7 +251,7 @@
           const from = zimo ? null : (hule.from !== undefined ? Number(hule.from) : lastSource);
           check(zimo || Number.isInteger(from), '荣和事件缺少可核实的放铳者。');
           rounds.push({ id: 'win-' + index + '-' + winIndex, label: currentLabel || '和牌 ' + (rounds.length + 1), winner, from, zimo,
-            aka: metric(hule.fans || [], 'aka'), ura: metric(hule.fans || [], 'ura'), ippatsu: metric(hule.fans || [], 'ippatsu') > 0, yakumanUnits: yakumanUnits(hule) });
+            aka: metric(hule.fans || [], 'aka'), ura: metric(hule.fans || [], 'ura'), ippatsu: metric(hule.fans || [], 'ippatsu') > 0, yakumanUnits: yakumanUnits(hule), menzen: winMenzen(hule, menzenStates[winner]) });
         });
         const ending = d.gameend?.scores?.length ? d.gameend.scores : d.scores;
         terminalScores = ending?.length ? ending : d.old_scores?.length === players.length && d.delta_scores?.length === players.length ? d.old_scores.map((n, i) => n + d.delta_scores[i]) : null;
@@ -270,6 +320,10 @@
       for (const key of ['aka', 'ura']) check(Number.isSafeInteger(r[key]) && r[key] >= 0 && r[key] <= 100, '祝仪役种数量无效。');
       check(typeof r.ippatsu === 'boolean', '一发标记无效。');
       const clean = { id: String(r.id || 'win-' + index).slice(0, 100), label: String(r.label || '和牌 ' + (index + 1)).slice(0, 100), winner: r.winner, from: r.zimo ? null : r.from, zimo: r.zimo, aka: r.aka, ura: r.ura, ippatsu: r.ippatsu };
+      if (r.menzen !== undefined) {
+        check(typeof r.menzen === 'boolean', '门清状态无效。');
+        clean.menzen = r.menzen;
+      }
       // Preserve unknown metadata in old normalized files; never label it zero.
       if (r.yakumanUnits !== undefined) {
         check(Number.isSafeInteger(r.yakumanUnits) && r.yakumanUnits >= 0 && r.yakumanUnits <= 100, '役满倍数无效。');
